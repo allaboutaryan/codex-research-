@@ -25,7 +25,7 @@ function send(response, status, data) {
   response.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-methods': 'GET, HEAD, POST, OPTIONS',
     'access-control-allow-headers': 'content-type, x-workspace-key',
     'cache-control': 'no-store',
   });
@@ -187,7 +187,7 @@ async function advance() {
 const server = http.createServer(async (request, response) => {
   if (request.method === 'OPTIONS') return send(response, 204, {});
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
-  if (request.method === 'GET' && url.pathname === '/health') return send(response, 200, { ok: true, database: pool ? 'postgres' : 'memory', mode: 'demo' });
+  if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/health') return send(response, 200, { ok: true, database: pool ? 'postgres' : 'memory', mode: 'demo' });
   const workspace = keyFrom(request);
   if (!workspace) return send(response, 401, { error: 'A workspace key is required' });
   try {
@@ -220,4 +220,3 @@ const server = http.createServer(async (request, response) => {
 await init();
 server.listen(port, '0.0.0.0', () => console.log(`Northstar Lab API listening on ${port}`));
 setInterval(() => advance().catch((error) => console.error('Worker failed:', error)), 750).unref();
-
