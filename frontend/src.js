@@ -1,5 +1,6 @@
 import './style.css';
 import './chats.css';
+import './usage.css';
 
 const API = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
 const REPO = 'https://github.com/allaboutaryan/codex-research-';
@@ -20,6 +21,8 @@ const roles = [
 ];
 
 let data = { tasks: [], events: [], messages: [], modelCalls: 0, inputTokens: 0, outputTokens: 0, database: 'memory' };
+let usageData = null;
+let usageError = '';
 let selectedTask = null;
 let chatTask = 'all';
 let chatAgent = 'all';
@@ -30,7 +33,8 @@ let connection = 'connecting';
 let lastRenderedSignature = '';
 
 const escapeHTML = (value) => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
-const currentView = () => location.hash === '#chats' ? 'chats' : 'overview';
+const currentView = () => location.hash === '#chats' ? 'chats' : location.hash === '#usage' ? 'usage' : 'overview';
+const formatNumber = (value) => Number(value || 0).toLocaleString();
 const skillURL = (role) => {
   const skill = roles.find((item) => item.label === role)?.skill;
   return skill ? `${REPO}/blob/main/agents/skills/${skill}/SKILL.md` : null;
@@ -89,7 +93,7 @@ function renderOverview() {
       <div class="metric"><span>Total tasks</span><strong>${data.tasks.length}</strong><small>${queued.length} waiting in queue</small></div>
       <div class="metric"><span>Active runs</span><strong>${running.length}</strong><small>${running.length ? 'Workflow in progress' : 'No work in progress'}</small></div>
       <div class="metric"><span>Completed</span><strong>${complete.length}</strong><small>Demo walkthroughs</small></div>
-      <div class="metric accent"><span>AI tokens used</span><strong>${data.inputTokens + data.outputTokens}</strong><small>${data.modelCalls} model calls</small></div>
+      <div class="metric accent"><span>AI tokens used</span><strong>${formatNumber(usageData?.summary?.total?.totalTokens)}</strong><small>${formatNumber(usageData?.summary?.total?.calls)} actual model calls</small></div>
     </section>
     <section class="flow-section">
       <div class="section-heading"><div><div class="eyebrow">THE OPERATING LOOP</div><h2>Team workflow</h2></div><div class="section-note">${active ? `Active: ${escapeHTML(active.title)}` : 'Waiting for a task'}</div></div>
@@ -176,8 +180,50 @@ function renderChats() {
     </div>`;
 }
 
+function renderUsage() {
+  const total = usageData?.summary?.total || {};
+  const byProvider = usageData?.summary?.byProvider || {};
+  const byAgent = usageData?.summary?.byAgent || {};
+  const connections = usageData?.connections || [];
+  const routes = usageData?.routes || [];
+  const events = usageData?.events || [];
+  return `
+    <section class="intro">
+      <div><div class="eyebrow">PROVIDER CONNECTIONS / MEASURED ACTIVITY</div><h1>Worker usage</h1><p>Token accounting for this workspace’s actual worker calls.</p></div>
+      <span class="demo-tag">NO SUBSCRIPTIONS CONNECTED</span>
+    </section>
+    <div class="usage-explainer">This page does not read your entire ChatGPT or Claude account. It records calls made by Northstar workers only; scripted demo chats never count as usage. Subscription balances and reset times must be checked with each provider. No OAuth credentials are stored in this browser.</div>
+    ${usageError ? `<div class="alert" role="alert">${escapeHTML(usageError)}</div>` : ''}
+    <section class="metrics" aria-label="Actual worker usage">
+      <div class="metric accent"><span>Actual model calls</span><strong>${formatNumber(total.calls)}</strong><small>Demo handoffs excluded</small></div>
+      <div class="metric"><span>Input tokens</span><strong>${formatNumber(total.inputTokens)}</strong><small>Includes cached input</small></div>
+      <div class="metric"><span>Output tokens</span><strong>${formatNumber(total.outputTokens)}</strong><small>Includes reasoning output</small></div>
+      <div class="metric"><span>Cached input</span><strong>${formatNumber(total.cachedInputTokens)}</strong><small>Subset of input, not added twice</small></div>
+    </section>
+    <section class="provider-section">
+      <div class="section-heading"><div><div class="eyebrow">SUBSCRIPTION CONNECTIONS</div><h2>Providers</h2></div><div class="section-note">No auto-switching between accounts</div></div>
+      <div class="provider-grid">${connections.map((item) => `<article class="panel provider-card">
+        <div class="provider-top"><span class="provider-icon">${item.worker === 'Codex' ? 'C' : 'A'}</span><span class="connection-pill">Not connected</span></div>
+        <h3>${escapeHTML(item.worker)}</h3><p>${escapeHTML(item.requirement)}</p>
+        <div class="provider-stats"><span>${formatNumber(byProvider[item.provider]?.calls)} calls</span><span>${formatNumber(byProvider[item.provider]?.totalTokens)} tokens</span></div>
+        <a href="${item.provider === 'openai' ? 'https://chatgpt.com/#settings/Usage' : 'https://claude.ai/settings/usage'}" target="_blank" rel="noopener noreferrer">Check provider usage ↗</a>
+      </article>`).join('') || '<div class="empty">Loading provider status…</div>'}</div>
+    </section>
+    <section class="panel routing-panel">
+      <div class="panel-head"><div><div class="eyebrow">PLANNED ASSIGNMENTS</div><h2>Worker routing</h2></div><span class="panel-counter">Inactive until connected</span></div>
+      <div class="routing-table" role="table" aria-label="Planned worker routes">
+        <div class="routing-row routing-head" role="row"><span>Agent</span><span>Worker / purpose</span><span>Calls</span><span>Input</span><span>Output</span><span>Cached</span></div>
+        ${routes.map((route) => `<div class="routing-row" role="row"><span><a href="${skillURL(route.agent)}" target="_blank" rel="noopener noreferrer">${escapeHTML(route.agent)} ↗</a></span><span>${escapeHTML(route.worker)}<small>${escapeHTML(route.reason)}</small></span><span>${formatNumber(byAgent[route.agent]?.calls)}</span><span>${formatNumber(byAgent[route.agent]?.inputTokens)}</span><span>${formatNumber(byAgent[route.agent]?.outputTokens)}</span><span>${formatNumber(byAgent[route.agent]?.cachedInputTokens)}</span></div>`).join('')}
+      </div>
+    </section>
+    <section class="panel usage-history">
+      <div class="panel-head"><div><div class="eyebrow">AUDIT LOG</div><h2>Recent worker calls</h2></div><span class="panel-counter">${events.length} recorded</span></div>
+      ${events.length ? `<div class="usage-events">${events.map((event) => `<div class="usage-event"><div><strong>${escapeHTML(event.agent_id)}</strong><span>${escapeHTML(data.tasks.find((task) => task.id === event.task_id)?.title || 'Task')} · ${escapeHTML(event.model || event.provider)}</span></div><div>${formatNumber(Number(event.input_tokens) + Number(event.output_tokens))} tokens <small>${formatNumber(event.input_tokens)} in · ${formatNumber(event.output_tokens)} out · ${formatNumber(event.cached_input_tokens)} cached</small><small>${formatDateTime(event.created_at)}</small></div></div>`).join('')}</div>` : '<div class="empty">No real worker calls have been recorded. Demo tasks do not consume tokens.</div>'}
+    </section>`;
+}
+
 function signature() {
-  return JSON.stringify([data.tasks, data.events, data.messages, data.database, data.modelCalls, data.inputTokens, data.outputTokens, connection, error, selectedTask, chatTask, chatAgent, currentView(), busy]);
+  return JSON.stringify([data.tasks, data.events, data.messages, data.database, data.modelCalls, data.inputTokens, data.outputTokens, usageData, usageError, connection, error, selectedTask, chatTask, chatAgent, currentView(), busy]);
 }
 
 function render() {
@@ -203,6 +249,7 @@ function render() {
           <a class="nav-item ${location.hash === '#tasks' ? 'active' : ''}" href="#tasks"><span class="nav-glyph">▤</span> Task queue <span class="nav-count">${data.tasks.length}</span></a>
           <a class="nav-item ${location.hash === '#activity' ? 'active' : ''}" href="#activity"><span class="nav-glyph">◷</span> Activity</a>
           <a class="nav-item ${view === 'chats' ? 'active' : ''}" href="#chats"><span class="nav-glyph">◉</span> Agent chats <span class="nav-count">${data.messages.length}</span></a>
+          <a class="nav-item ${view === 'usage' ? 'active' : ''}" href="#usage"><span class="nav-glyph">◈</span> Worker usage</a>
         </nav>
         <div class="side-bottom">
           <div class="side-label">CURRENT MODE</div>
@@ -213,12 +260,12 @@ function render() {
       </aside>
       <main id="${view}" class="main">
         <header class="topbar">
-          <div class="crumb">Workspace <span>/</span> ${view === 'chats' ? 'Agent chats' : 'Operations'}</div>
+          <div class="crumb">Workspace <span>/</span> ${view === 'chats' ? 'Agent chats' : view === 'usage' ? 'Worker usage' : 'Operations'}</div>
           <div class="top-actions"><span class="status ${connection === 'connected' ? 'online' : 'offline'}"><i></i>${connection === 'connected' ? 'Live backend' : 'Connecting'}</span><span class="avatar">CTO</span></div>
         </header>
         <div class="content">
           ${error ? `<div class="alert" role="alert">${escapeHTML(error)} <span>Backend: ${escapeHTML(API)}</span></div>` : ''}
-          ${view === 'chats' ? renderChats() : renderOverview()}
+          ${view === 'chats' ? renderChats() : view === 'usage' ? renderUsage() : renderOverview()}
           <footer>Northstar Lab · Workflow preview · ${data.database === 'postgres' ? 'PostgreSQL-backed demo history' : 'Temporary demo history'} · <a href="${REPO}" target="_blank" rel="noopener noreferrer">Source on GitHub ↗</a></footer>
         </div>
       </main>
@@ -255,6 +302,17 @@ async function refresh() {
   } catch (cause) {
     error = `Could not reach the operations backend: ${cause.message}`;
     connection = 'disconnected';
+  }
+  const typing = document.activeElement?.id === 'title' || document.activeElement?.id === 'brief';
+  if (!busy && !typing && signature() !== lastRenderedSignature) render();
+}
+
+async function refreshUsage() {
+  try {
+    usageData = await request('/api/usage');
+    usageError = '';
+  } catch (cause) {
+    usageError = `Could not load worker usage: ${cause.message}`;
   }
   const typing = document.activeElement?.id === 'title' || document.activeElement?.id === 'brief';
   if (!busy && !typing && signature() !== lastRenderedSignature) render();
@@ -298,6 +356,7 @@ async function run(id) {
 
 window.addEventListener('hashchange', () => {
   render();
+  refreshUsage();
   const anchor = location.hash.slice(1);
   requestAnimationFrame(() => {
     if (anchor === 'tasks' || anchor === 'activity') document.getElementById(anchor)?.scrollIntoView({ behavior: 'smooth' });
@@ -307,4 +366,6 @@ window.addEventListener('hashchange', () => {
 
 render();
 refresh();
+refreshUsage();
 setInterval(refresh, 1500);
+setInterval(refreshUsage, 10000);

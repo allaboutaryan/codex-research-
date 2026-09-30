@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
+import { readUsage } from './usage-store.js';
 
 const port = Number(process.env.PORT || 8787);
 const pool = process.env.DATABASE_URL ? new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 4 }) : null;
@@ -81,16 +82,34 @@ async function init() {
       demo boolean NOT NULL DEFAULT true,
       created_at timestamptz NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL REFERENCES workspaces(id),
+      task_id text NOT NULL REFERENCES tasks(id),
+      agent_id text NOT NULL,
+      provider text NOT NULL,
+      model text NOT NULL DEFAULT '',
+      request_id text NOT NULL,
+      input_tokens integer NOT NULL CHECK (input_tokens >= 0),
+      output_tokens integer NOT NULL CHECK (output_tokens >= 0),
+      cached_input_tokens integer NOT NULL DEFAULT 0 CHECK (cached_input_tokens >= 0),
+      cache_write_tokens integer NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0),
+      reasoning_output_tokens integer NOT NULL DEFAULT 0 CHECK (reasoning_output_tokens >= 0),
+      cost_usd numeric(12,6),
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (workspace_id, provider, request_id)
+    );
     CREATE INDEX IF NOT EXISTS idx_tasks_workspace_created ON tasks(workspace_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_events_workspace_id ON events(workspace_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_messages_workspace_id ON agent_messages(workspace_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_messages_task_id ON agent_messages(task_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_usage_events_workspace_id ON usage_events(workspace_id, id DESC);
   `);
 }
 
 async function ensureWorkspace(workspace) {
   if (!pool) {
-    if (!memory.has(workspace)) memory.set(workspace, { tasks: [], events: [], messages: [], nextId: 1, nextMessageId: 1 });
+    if (!memory.has(workspace)) memory.set(workspace, { tasks: [], events: [], messages: [], usage: [], nextId: 1, nextMessageId: 1 });
     return;
   }
   await pool.query('INSERT INTO workspaces (id) VALUES ($1) ON CONFLICT DO NOTHING', [workspace]);
@@ -224,6 +243,10 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/state') {
       const state = await readState(workspace);
       return send(response, 200, { ...state, mode: 'demo', database: pool ? 'postgres' : 'memory', modelCalls: 0, inputTokens: 0, outputTokens: 0, maxTasks: 20 });
+    }
+    if (request.method === 'GET' && url.pathname === '/api/usage') {
+      await ensureWorkspace(workspace);
+      return send(response, 200, await readUsage(pool, memory, workspace));
     }
     if (request.method === 'POST' && url.pathname === '/api/tasks') {
       const body = await bodyOf(request);
