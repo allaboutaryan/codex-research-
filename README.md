@@ -2,7 +2,7 @@
 
 Northstar Lab is an operations console for a research team that investigates real problems, checks evidence independently, and turns promising gaps into software-product opportunities. The long-term goal is a supervised team of AI agents whose work, decisions, costs, and daily progress are visible to the human owner.
 
-**Current status:** The [live dashboard](https://northstar-lab-woad.vercel.app/) is a workflow demo. Its handoffs are scripted, it performs no research, and it makes **zero AI model calls**. The role skills below define the intended behavior, but no model-backed agents, agent chat, or daily reports are running yet.
+**Current status:** The [live dashboard](https://northstar-lab-woad.vercel.app/) and its [Agent chats view](https://northstar-lab-woad.vercel.app/#chats) are a workflow demo. Its handoffs and messages are scripted, it performs no research, and it makes **zero AI model calls**. The role skills below define the intended behavior; model-backed agents and daily reports are not running yet.
 
 ## The team
 
@@ -41,7 +41,7 @@ flowchart TD
 7. **Close or continue.** The project manager closes only accepted work. A promising gap becomes a candidate for further validation, not an automatic product decision. The CTO chooses the next bounded investigation or asks the owner to decide.
 8. **Report daily.** Each active agent reports completed, in-progress, and blocked work; evidence and decisions; actual token/cost usage; and next actions. The CTO combines these into a short owner-facing summary at the owner's configured time and timezone. No activity is reported as no activity, never invented progress.
 
-Every assignment, finding, review, decision, blocker, and handoff is intended to become an append-only message linked to a task and run. The owner will see these work messages in an **Agent conversation** panel and inspect the daily summaries in a **Daily reports** view. The feed will show auditable conclusions and evidence—not hidden model reasoning, secrets, or long copied tool transcripts.
+The [Agent chats view](https://northstar-lab-woad.vercel.app/#chats) currently shows task-linked, append-only **demo** messages for each assignment, handoff, revision, review, and report. It includes task and sender filters plus links to each [role skill](agents/skills/) and the [work protocol](agents/PROTOCOL.md). These are scripted messages, **not actual agent conversations or research findings**. When real agents are connected, the feed should show auditable conclusions and evidence—not hidden model reasoning, secrets, or long copied tool transcripts. Per-agent and CTO daily reports remain a future milestone.
 
 ## Research artifacts and product decisions
 
@@ -60,15 +60,18 @@ If a candidate survives that test, the CTO presents an evidence-backed **go / re
 
 | Capability | Status |
 | --- | --- |
-| Dashboard and scripted PM → lead → worker → QA → revision → closure walkthrough | Live demo |
+| Dashboard and scripted PM → lead → worker → QA → revision → CTO walkthrough | Live demo |
 | Task/event API on Render and frontend on Vercel | Live demo |
 | UptimeRobot check of the API `/health` endpoint every five minutes | Configured |
-| PostgreSQL persistence | Supported in code, **not connected** to the deployed API; current demo tasks can disappear after a restart |
+| Dedicated [Agent chats view](https://northstar-lab-woad.vercel.app/#chats) with task/sender filters and links to skills | Live scripted demo; no model calls |
+| PostgreSQL persistence of demo tasks, events, and agent messages | Connected on Render; the free database expires October 30, 2026 unless upgraded |
 | Versioned role skills and shared message/report contract | In this repository; **not connected to a model runtime** |
 | Real agent conversation, per-agent daily reports, CTO daily roll-up | Planned |
 | Source tools, real research, independent evidence checks, authenticated users | Planned |
 
-The next engineering milestone is durable storage plus the task-linked conversation and report views. The backend will save append-only `agent_messages` and `daily_reports`; the frontend will receive new messages through server-sent events with a history fallback. A separate scheduler will generate daily reports at the owner's chosen time. **UptimeRobot is a health check and keep-alive, not a job scheduler.** Only after these foundations and access controls are in place should model-backed agents begin research.
+The backend now saves append-only `agent_messages` alongside task events; the frontend polls for updates every 1.5 seconds. The next engineering milestone is owner authentication, a secure provider connection, and durable per-agent/daily reports. A separate scheduler will generate reports at the owner's chosen time. **UptimeRobot is a health check and keep-alive, not a job scheduler.** Only after access controls and report storage are in place should model-backed agents begin research.
+
+For provider access, use official authentication flows. [OpenAI's Sign in with ChatGPT](https://developers.openai.com/siwc/quickstart) offers OAuth-based plan usage for eligible open-source apps; the exact hosted deployment and scopes need validation before integration. [Anthropic directs developers building products for others to the Claude API](https://support.claude.com/en/articles/13189465-log-in-to-your-claude-account); a Claude Code subscription is not a general-purpose API credential. Do not use chat-share links or rotate subscription accounts to evade limits. Provider credentials should never appear in the browser, GitHub, or agent messages.
 
 ## Run locally
 

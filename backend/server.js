@@ -6,13 +6,14 @@ const port = Number(process.env.PORT || 8787);
 const pool = process.env.DATABASE_URL ? new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 4 }) : null;
 const memory = new Map();
 const phases = [
-  ['Project manager', 'Scoped the assignment and set a review gate.'],
-  ['Team lead', 'Assigned the task to the research worker.'],
-  ['Research worker', 'Submitted a sample work packet for review.'],
-  ['Quality reviewer', 'Requested one revision in this workflow demo.'],
-  ['Research worker', 'Returned a revised sample work packet.'],
-  ['Quality reviewer', 'Confirmed the sample review handoff.'],
-  ['Project manager', 'Closed the workflow walkthrough. No research was performed.'],
+  { agent: 'Project manager', recipient: 'Team lead', kind: 'assignment', event: 'Scoped the assignment and set a review gate.', summary: (task) => `Demo assignment: coordinate a sample work packet for “${task.title}”. This run performs no research.` },
+  { agent: 'Team lead', recipient: 'Research worker', kind: 'assignment', event: 'Assigned the task to the research worker.', summary: () => 'Demo handoff: prepare a sample work packet and label every item as simulated. Do not search external sources.' },
+  { agent: 'Research worker', recipient: 'Quality reviewer', kind: 'handoff', event: 'Submitted a sample work packet for review.', summary: () => 'Sample packet submitted for workflow review. No papers were read, sources gathered, or findings produced.' },
+  { agent: 'Quality reviewer', recipient: 'Research worker', kind: 'review', event: 'Requested one revision in this workflow demo.', summary: () => 'Revision requested: make the demo-only status explicit so no sample text is mistaken for verified research.' },
+  { agent: 'Research worker', recipient: 'Quality reviewer', kind: 'handoff', event: 'Returned a revised sample work packet.', summary: () => 'Revision submitted: the packet is now marked as simulated and contains no research claims.' },
+  { agent: 'Quality reviewer', recipient: 'Project manager', kind: 'review', event: 'Confirmed the sample review handoff.', summary: () => 'Accepted the workflow demonstration only. No evidence check was possible because there are no research sources.' },
+  { agent: 'Project manager', recipient: 'CTO', kind: 'decision', event: 'Closed the workflow walkthrough. No research was performed.', summary: () => 'Closed the demo task after the sample QA handoff. Research output: none; model calls: zero.' },
+  { agent: 'CTO', recipient: 'Owner', kind: 'status', event: 'Reported the completed walkthrough to the owner.', summary: () => 'Demo walkthrough complete. The team chat shown here is scripted; real agents and daily reports are not yet active.' },
 ];
 
 function keyFrom(request) {
@@ -66,14 +67,30 @@ async function init() {
       message text NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS agent_messages (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL REFERENCES workspaces(id),
+      run_id text NOT NULL,
+      task_id text NOT NULL REFERENCES tasks(id),
+      agent_id text NOT NULL,
+      recipient_id text NOT NULL,
+      kind text NOT NULL,
+      summary text NOT NULL,
+      artifact_refs jsonb NOT NULL DEFAULT '[]'::jsonb,
+      evidence_refs jsonb NOT NULL DEFAULT '[]'::jsonb,
+      demo boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
     CREATE INDEX IF NOT EXISTS idx_tasks_workspace_created ON tasks(workspace_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_events_workspace_id ON events(workspace_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_messages_workspace_id ON agent_messages(workspace_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_messages_task_id ON agent_messages(task_id, id DESC);
   `);
 }
 
 async function ensureWorkspace(workspace) {
   if (!pool) {
-    if (!memory.has(workspace)) memory.set(workspace, { tasks: [], events: [], nextId: 1 });
+    if (!memory.has(workspace)) memory.set(workspace, { tasks: [], events: [], messages: [], nextId: 1, nextMessageId: 1 });
     return;
   }
   await pool.query('INSERT INTO workspaces (id) VALUES ($1) ON CONFLICT DO NOTHING', [workspace]);
@@ -83,13 +100,14 @@ async function readState(workspace) {
   await ensureWorkspace(workspace);
   if (!pool) {
     const state = memory.get(workspace);
-    return { tasks: [...state.tasks].reverse(), events: [...state.events].reverse().slice(0, 50) };
+    return { tasks: [...state.tasks].reverse(), events: [...state.events].reverse().slice(0, 50), messages: [...state.messages].reverse().slice(0, 200) };
   }
-  const [tasks, events] = await Promise.all([
+  const [tasks, events, messages] = await Promise.all([
     pool.query('SELECT * FROM tasks WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 30', [workspace]),
     pool.query('SELECT * FROM events WHERE workspace_id = $1 ORDER BY id DESC LIMIT 50', [workspace]),
+    pool.query('SELECT * FROM agent_messages WHERE workspace_id = $1 ORDER BY id DESC LIMIT 200', [workspace]),
   ]);
-  return { tasks: tasks.rows, events: events.rows };
+  return { tasks: tasks.rows, events: events.rows, messages: messages.rows };
 }
 
 async function createTask(workspace, title, brief) {
@@ -153,8 +171,14 @@ async function advance() {
     for (const [workspace, state] of memory) {
       for (const task of state.tasks) {
         if (task.status !== 'running' || Date.now() - new Date(task.updated_at).getTime() < 1600) continue;
-        const [role, message] = phases[task.step];
-        state.events.push({ id: state.nextId++, workspace_id: workspace, task_id: task.id, role, message, created_at: new Date().toISOString() });
+        const phase = phases[task.step];
+        if (!phase) {
+          task.status = 'complete';
+          continue;
+        }
+        const createdAt = new Date().toISOString();
+        state.events.push({ id: state.nextId++, workspace_id: workspace, task_id: task.id, role: phase.agent, message: phase.event, created_at: createdAt });
+        state.messages.push({ id: state.nextMessageId++, workspace_id: workspace, run_id: task.id, task_id: task.id, agent_id: phase.agent, recipient_id: phase.recipient, kind: phase.kind, summary: phase.summary(task), artifact_refs: [], evidence_refs: [], demo: true, created_at: createdAt });
         task.step += 1;
         task.status = task.step >= phases.length ? 'complete' : 'running';
         task.updated_at = new Date().toISOString();
@@ -165,16 +189,22 @@ async function advance() {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const result = await client.query("SELECT id, workspace_id, step FROM tasks WHERE status = 'running' AND updated_at < now() - interval '1.6 seconds' ORDER BY updated_at LIMIT 1 FOR UPDATE SKIP LOCKED");
+    const result = await client.query("SELECT id, workspace_id, title, step FROM tasks WHERE status = 'running' AND updated_at < now() - interval '1.6 seconds' ORDER BY updated_at LIMIT 1 FOR UPDATE SKIP LOCKED");
     const task = result.rows[0];
     if (!task) {
       await client.query('COMMIT');
       return;
     }
-    const [role, message] = phases[task.step];
+    const phase = phases[task.step];
+    if (!phase) {
+      await client.query("UPDATE tasks SET status = 'complete', updated_at = now() WHERE id = $1", [task.id]);
+      await client.query('COMMIT');
+      return;
+    }
     const nextStep = task.step + 1;
     await client.query('UPDATE tasks SET step = $1, status = $2, updated_at = now() WHERE id = $3', [nextStep, nextStep >= phases.length ? 'complete' : 'running', task.id]);
-    await client.query('INSERT INTO events (workspace_id, task_id, role, message) VALUES ($1, $2, $3, $4)', [task.workspace_id, task.id, role, message]);
+    await client.query('INSERT INTO events (workspace_id, task_id, role, message) VALUES ($1, $2, $3, $4)', [task.workspace_id, task.id, phase.agent, phase.event]);
+    await client.query('INSERT INTO agent_messages (workspace_id, run_id, task_id, agent_id, recipient_id, kind, summary) VALUES ($1, $2, $3, $4, $5, $6, $7)', [task.workspace_id, task.id, task.id, phase.agent, phase.recipient, phase.kind, phase.summary(task)]);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -193,7 +223,7 @@ const server = http.createServer(async (request, response) => {
   try {
     if (request.method === 'GET' && url.pathname === '/api/state') {
       const state = await readState(workspace);
-      return send(response, 200, { ...state, mode: 'demo', modelCalls: 0, inputTokens: 0, outputTokens: 0, maxTasks: 20 });
+      return send(response, 200, { ...state, mode: 'demo', database: pool ? 'postgres' : 'memory', modelCalls: 0, inputTokens: 0, outputTokens: 0, maxTasks: 20 });
     }
     if (request.method === 'POST' && url.pathname === '/api/tasks') {
       const body = await bodyOf(request);
