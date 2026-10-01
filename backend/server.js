@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { readUsage } from './usage-store.js';
 import { claimClaudeTask, completeClaudeTask, failClaudeTask, heartbeatClaudeWorker, pairClaudeWorker, queueClaudeTask, workspaceForWorkerKey } from './claude-jobs.js';
-import { buildChatContext, claimClaudeChat, completeClaudeChat, defaultMission, failClaudeChat, queueClaudeChat, readProjectContext, saveProjectContext } from './claude-chat.js';
+import { buildChatContext, claimClaudeChat, completeClaudeChat, defaultMission, failClaudeChat, queueClaudeChat, queueTeamWorkflow, readProjectContext, saveProjectContext } from './claude-chat.js';
 import { claimClaudeReview, completeClaudeReview, decideReview, failClaudeReview, queueClaudeReview } from './claude-review.js';
 import { deriveAlerts, readDailyReports, reportTick } from './reports.js';
 
@@ -72,6 +72,7 @@ async function init() {
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review_attempts integer NOT NULL DEFAULT 0;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review_lease_token text;
     ALTER TABLE tasks ADD COLUMN IF NOT EXISTS review_lease_expires_at timestamptz;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS team_workflow boolean NOT NULL DEFAULT false;
     CREATE TABLE IF NOT EXISTS events (
       id bigserial PRIMARY KEY,
       workspace_id text NOT NULL REFERENCES workspaces(id),
@@ -132,6 +133,7 @@ async function init() {
       created_at timestamptz NOT NULL DEFAULT now()
     );
     ALTER TABLE claude_chat_jobs ADD COLUMN IF NOT EXISTS agent_id text NOT NULL DEFAULT 'Research worker';
+    ALTER TABLE claude_chat_jobs ADD COLUMN IF NOT EXISTS job_type text NOT NULL DEFAULT 'owner_chat';
     CREATE TABLE IF NOT EXISTS daily_reports (
       workspace_id text NOT NULL REFERENCES workspaces(id),
       report_date date NOT NULL,
@@ -178,10 +180,10 @@ async function readState(workspace) {
     return { tasks: [...state.tasks].reverse().map(({ claude_lease_token, claude_lease_expires_at, review_lease_token, review_lease_expires_at, ...task }) => task), events: [...state.events].reverse().slice(0, 50), messages: [...state.messages].reverse().slice(0, 200), reviewPackets, chatJobs: [...state.chatJobs].reverse().slice(0, 30).map(({ lease_token, lease_expires_at, question, ...job }) => job) };
   }
   const [tasks, events, messages, chatJobs, packets] = await Promise.all([
-    pool.query('SELECT id, workspace_id, title, brief, status, step, claude_attempts, review_attempts, created_at, updated_at FROM tasks WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 30', [workspace]),
+    pool.query('SELECT id, workspace_id, title, brief, status, step, team_workflow, claude_attempts, review_attempts, created_at, updated_at FROM tasks WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 30', [workspace]),
     pool.query('SELECT * FROM events WHERE workspace_id = $1 ORDER BY id DESC LIMIT 50', [workspace]),
     pool.query('SELECT * FROM agent_messages WHERE workspace_id = $1 ORDER BY id DESC LIMIT 200', [workspace]),
-    pool.query('SELECT id, task_id, agent_id, status, created_at FROM claude_chat_jobs WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 30', [workspace]),
+    pool.query('SELECT id, task_id, agent_id, job_type, status, created_at FROM claude_chat_jobs WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 30', [workspace]),
     pool.query(`SELECT DISTINCT ON (task_id, kind) id, task_id, kind, agent_id, summary, evidence_refs, created_at
       FROM agent_messages WHERE workspace_id = $1 AND demo = false AND kind IN ('finding', 'review', 'blocker')
       ORDER BY task_id, kind, id DESC`, [workspace]),
@@ -383,6 +385,12 @@ const server = http.createServer(async (request, response) => {
       await ensureWorkspace(workspace);
       const queued = await queueClaudeTask(pool, memory, workspace, claudeTask[1]);
       return send(response, queued ? 200 : 409, queued ? { ok: true } : { error: 'Task is unavailable for Claude' });
+    }
+    const teamTask = url.pathname.match(/^\/api\/tasks\/([a-f0-9-]{36})\/start-team$/);
+    if (request.method === 'POST' && teamTask) {
+      await ensureWorkspace(workspace);
+      const queued = await queueTeamWorkflow(pool, memory, workspace, teamTask[1]);
+      return send(response, queued ? 200 : 409, queued ? { ok: true } : { error: 'Task is unavailable for the team workflow' });
     }
     const reviewTask = url.pathname.match(/^\/api\/tasks\/([a-f0-9-]{36})\/start-review$/);
     if (request.method === 'POST' && reviewTask) {

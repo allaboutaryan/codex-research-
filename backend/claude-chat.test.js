@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
-import { buildChatContext, claimClaudeChat, completeClaudeChat, defaultMission, queueClaudeChat, readProjectContext, saveProjectContext } from './claude-chat.js';
+import { buildChatContext, claimClaudeChat, completeClaudeChat, defaultMission, queueClaudeChat, queueTeamWorkflow, readProjectContext, saveProjectContext } from './claude-chat.js';
 
 test('owner chat keeps durable goal, scoped history, and measured Claude answer', async () => {
   const workspace = 'one';
@@ -59,5 +59,34 @@ test('owner can address Quality reviewer directly without creating a formal verd
   assert.equal(memory.get('one').messages.at(-1).agent_id, 'Quality reviewer');
   assert.equal(memory.get('one').usage[0].agent_id, 'Quality reviewer');
   assert.equal(memory.get('one').tasks[0].status, 'review_queued');
-  await assert.rejects(queueClaudeChat(null, memory, 'one', taskId, 'Forged message', 'CTO'), /Invalid chat recipient/);
+  const cto = await queueClaudeChat(null, memory, 'one', taskId, 'What should happen next?', 'CTO');
+  assert.equal(memory.get('one').chatJobs.find((item) => item.id === cto).agent_id, 'CTO');
+  await assert.rejects(queueClaudeChat(null, memory, 'one', taskId, 'Forged message', 'Unknown role'), /Invalid chat recipient/);
 });
+
+test('full team handoffs are separate measured calls with visible recipients', async () => {
+  const taskId = randomUUID();
+  const state = { tasks: [{ id: taskId, title: 'Scope a developer need', brief: '2016–2026 primary sources', status: 'queued' }],
+    messages: [], chatJobs: [], events: [], usage: [], nextId: 1, nextMessageId: 1, mission: defaultMission };
+  const memory = new Map([['one', state]]);
+  assert.equal(await queueTeamWorkflow(null, memory, 'one', taskId), true);
+  assert.equal(await queueTeamWorkflow(null, memory, 'one', taskId), false);
+  const pm = await claimClaudeChat(null, memory, 'one');
+  assert.equal(pm.job_type, 'team_plan');
+  assert.equal(pm.agent_id, 'Project manager');
+  assert.equal(await completeClaudeChat(null, memory, 'one', pm.id, result(pm.lease_token, 'PM scoped the question and the acceptance criteria for the team lead.')), true);
+  assert.equal(state.tasks[0].status, 'lead_queued');
+  assert.equal(state.messages.at(-1).recipient_id, 'Team lead');
+  const lead = await claimClaudeChat(null, memory, 'one');
+  assert.equal(lead.job_type, 'team_assign');
+  assert.equal(lead.context.recent_task_history.at(-1).agent, 'Project manager');
+  assert.equal(await completeClaudeChat(null, memory, 'one', lead.id, result(lead.lease_token, 'Research worker should check three primary papers before QA.')), true);
+  assert.equal(state.tasks[0].status, 'claude_queued');
+  assert.equal(state.messages.at(-1).recipient_id, 'Research worker');
+  assert.equal(state.usage.length, 2);
+});
+
+function result(lease_token, summary) {
+  return { lease_token, summary, model: 'claude-test', request_id: randomUUID(), evidence_refs: [],
+    usage: { input_tokens: 20, output_tokens: 20, cached_input_tokens: 0, cache_write_tokens: 0, reasoning_output_tokens: 0 } };
+}

@@ -173,17 +173,23 @@ export async function decideReview(pool, memory, workspace, id, decision, note) 
       agent_id: 'Owner', recipient_id: decision === 'approve' ? 'Team' : 'Research worker', kind: 'decision',
       summary, artifact_refs: [], evidence_refs: [], demo: false, created_at: now() });
     state.events.push({ id: state.nextId++, workspace_id: workspace, task_id: id, role: 'Owner', message: summary, created_at: now() });
+    if (decision === 'approve' && task.team_workflow) state.chatJobs.push({ id: randomUUID(), task_id: id,
+      question: 'The owner approved the reviewed draft. Summarize the outcome, remaining limitations, and next decision for the CTO. Do not claim broader validation.',
+      agent_id: 'Project manager', job_type: 'team_close', status: 'queued', attempts: 0, created_at: now() });
     return true;
   }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const result = await client.query(`UPDATE tasks SET status = $3, updated_at = now()
-      WHERE id = $1 AND workspace_id = $2 AND status = 'review_accepted' RETURNING id`, [id, workspace, status]);
+      WHERE id = $1 AND workspace_id = $2 AND status = 'review_accepted' RETURNING id, team_workflow`, [id, workspace, status]);
     if (!result.rowCount) { await client.query('ROLLBACK'); return false; }
     await client.query(`INSERT INTO agent_messages (workspace_id, run_id, task_id, agent_id, recipient_id, kind, summary, demo)
       VALUES ($1, $2, $3, 'Owner', $4, 'decision', $5, false)`, [workspace, randomUUID(), id, decision === 'approve' ? 'Team' : 'Research worker', summary]);
     await client.query('INSERT INTO events (workspace_id, task_id, role, message) VALUES ($1, $2, $3, $4)', [workspace, id, 'Owner', summary]);
+    if (decision === 'approve' && result.rows[0].team_workflow) await client.query(`INSERT INTO claude_chat_jobs
+      (id, workspace_id, task_id, question, agent_id, job_type) VALUES ($1, $2, $3, $4, 'Project manager', 'team_close')`,
+    [randomUUID(), workspace, id, 'The owner approved the reviewed draft. Summarize the outcome, remaining limitations, and next decision for the CTO. Do not claim broader validation.']);
     await client.query('COMMIT');
     return true;
   } catch (error) { await client.query('ROLLBACK'); throw error; }

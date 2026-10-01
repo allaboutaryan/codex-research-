@@ -4,6 +4,13 @@ import { validateClaudeResult } from './claude-jobs.js';
 
 export const defaultMission = 'Find a durable, useful software product by researching credible work from roughly the last ten years, identifying a real unmet need, then building and testing a reusable application. Preserve sources, decisions, limitations, and progress in the project repository. Treat research gaps as hypotheses until independently checked.';
 const maxAttempts = 2;
+const agents = ['CTO', 'Project manager', 'Team lead', 'Research worker', 'Quality reviewer'];
+const stages = {
+  team_plan: { agent: 'Project manager', recipient: 'Team lead', next: 'team_assign', status: 'lead_queued', kind: 'assignment' },
+  team_assign: { agent: 'Team lead', recipient: 'Research worker', next: null, status: 'claude_queued', kind: 'assignment' },
+  team_close: { agent: 'Project manager', recipient: 'CTO', next: 'cto_report', status: 'approved', kind: 'status' },
+  cto_report: { agent: 'CTO', recipient: 'Owner', next: null, status: 'approved', kind: 'status' },
+};
 
 function stamp() { return new Date().toISOString(); }
 
@@ -31,7 +38,7 @@ export async function saveProjectContext(pool, memory, workspace, body) {
 export async function queueClaudeChat(pool, memory, workspace, taskId, question, agentId = 'Research worker') {
   const text = typeof question === 'string' ? question.trim() : '';
   if (text.length < 3 || text.length > 2000) throw new Error('Question must be 3–2000 characters');
-  if (!['Research worker', 'Quality reviewer'].includes(agentId)) throw new Error('Invalid chat recipient');
+  if (!agents.includes(agentId)) throw new Error('Invalid chat recipient');
   const id = randomUUID();
   if (!pool) {
     const state = memory.get(workspace);
@@ -41,7 +48,7 @@ export async function queueClaudeChat(pool, memory, workspace, taskId, question,
     state.messages.push({ id: state.nextMessageId++, workspace_id: workspace, run_id: id, task_id: taskId,
       agent_id: 'Owner', recipient_id: agentId, kind: 'question', summary: text,
       artifact_refs: [], evidence_refs: [], demo: false, created_at: stamp() });
-    state.chatJobs.push({ id, task_id: taskId, question: text, agent_id: agentId, status: 'queued', attempts: 0, created_at: stamp() });
+    state.chatJobs.push({ id, task_id: taskId, question: text, agent_id: agentId, job_type: 'owner_chat', status: 'queued', attempts: 0, created_at: stamp() });
     return id;
   }
   const client = await pool.connect();
@@ -54,9 +61,37 @@ export async function queueClaudeChat(pool, memory, workspace, taskId, question,
     if (pending.rows[0].count >= 5) throw new Error('At most five Claude questions can be pending');
     await client.query(`INSERT INTO agent_messages (workspace_id, run_id, task_id, agent_id, recipient_id, kind, summary, demo)
       VALUES ($1, $2, $3, 'Owner', $4, 'question', $5, false)`, [workspace, id, taskId, agentId, text]);
-    await client.query('INSERT INTO claude_chat_jobs (id, workspace_id, task_id, question, agent_id) VALUES ($1, $2, $3, $4, $5)', [id, workspace, taskId, text, agentId]);
+    await client.query('INSERT INTO claude_chat_jobs (id, workspace_id, task_id, question, agent_id, job_type) VALUES ($1, $2, $3, $4, $5, $6)', [id, workspace, taskId, text, agentId, 'owner_chat']);
     await client.query('COMMIT');
     return id;
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}
+
+export async function queueTeamWorkflow(pool, memory, workspace, taskId) {
+  const id = randomUUID();
+  const question = 'Scope this bounded research task and define acceptance criteria for the team lead. Do not conduct the research or imply that sources were checked.';
+  if (!pool) {
+    const state = memory.get(workspace);
+    const task = state?.tasks.find((item) => item.id === taskId && ['queued', 'team_failed'].includes(item.status));
+    if (!task) return false;
+    Object.assign(task, { status: 'planning_queued', team_workflow: true, updated_at: stamp() });
+    state.chatJobs.push({ id, task_id: taskId, question, agent_id: 'Project manager', job_type: 'team_plan', status: 'queued', attempts: 0, created_at: stamp() });
+    state.events.push({ id: state.nextId++, workspace_id: workspace, task_id: taskId, role: 'System', message: 'Real team workflow queued: PM → lead → research → QA → owner → PM → CTO.', created_at: stamp() });
+    return true;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(`UPDATE tasks SET status = 'planning_queued', team_workflow = true, updated_at = now()
+      WHERE id = $1 AND workspace_id = $2 AND status IN ('queued', 'team_failed') RETURNING id`, [taskId, workspace]);
+    if (!result.rowCount) { await client.query('ROLLBACK'); return false; }
+    await client.query(`INSERT INTO claude_chat_jobs (id, workspace_id, task_id, question, agent_id, job_type)
+      VALUES ($1, $2, $3, $4, 'Project manager', 'team_plan')`, [id, workspace, taskId, question]);
+    await client.query('INSERT INTO events (workspace_id, task_id, role, message) VALUES ($1, $2, $3, $4)',
+      [workspace, taskId, 'System', 'Real team workflow queued: PM → lead → research → QA → owner → PM → CTO.']);
+    await client.query('COMMIT');
+    return true;
   } catch (error) { await client.query('ROLLBACK'); throw error; }
   finally { client.release(); }
 }
@@ -102,7 +137,13 @@ export async function claimClaudeChat(pool, memory, workspace) {
   if (!pool) {
     const state = memory.get(workspace);
     const current = Date.now();
-    for (const item of state.chatJobs) if (item.status === 'running' && Date.parse(item.lease_expires_at) <= current && item.attempts >= maxAttempts) item.status = 'failed';
+    for (const item of state.chatJobs) if (item.status === 'running' && Date.parse(item.lease_expires_at) <= current && item.attempts >= maxAttempts) {
+      item.status = 'failed';
+      if (['team_plan', 'team_assign'].includes(item.job_type)) {
+        const task = state.tasks.find((entry) => entry.id === item.task_id);
+        if (task) { task.status = 'team_failed'; task.updated_at = stamp(); }
+      }
+    }
     job = state.chatJobs.find((item) => item.status === 'queued' ||
       (item.status === 'running' && Date.parse(item.lease_expires_at) <= current && item.attempts < maxAttempts));
     if (!job) return null;
@@ -111,7 +152,10 @@ export async function claimClaudeChat(pool, memory, workspace) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query("UPDATE claude_chat_jobs SET status = 'failed', lease_token = NULL WHERE workspace_id = $1 AND status = 'running' AND lease_expires_at < now() AND attempts >= $2", [workspace, maxAttempts]);
+      await client.query(`WITH expired AS (UPDATE claude_chat_jobs SET status = 'failed', lease_token = NULL
+        WHERE workspace_id = $1 AND status = 'running' AND lease_expires_at < now() AND attempts >= $2 RETURNING task_id, job_type)
+        UPDATE tasks SET status = 'team_failed', updated_at = now() WHERE id IN
+        (SELECT task_id FROM expired WHERE job_type IN ('team_plan', 'team_assign'))`, [workspace, maxAttempts]);
       const result = await client.query(`WITH candidate AS (
         SELECT id FROM claude_chat_jobs WHERE workspace_id = $1 AND (status = 'queued' OR
           (status = 'running' AND lease_expires_at < now() AND attempts < $2))
@@ -119,14 +163,14 @@ export async function claimClaudeChat(pool, memory, workspace) {
       ) UPDATE claude_chat_jobs SET status = 'running', lease_token = $3,
         lease_expires_at = now() + interval '8 minutes', attempts = attempts + 1
         FROM candidate WHERE claude_chat_jobs.id = candidate.id
-        RETURNING claude_chat_jobs.id, claude_chat_jobs.task_id, claude_chat_jobs.question, claude_chat_jobs.agent_id`, [workspace, maxAttempts, token]);
+        RETURNING claude_chat_jobs.id, claude_chat_jobs.task_id, claude_chat_jobs.question, claude_chat_jobs.agent_id, claude_chat_jobs.job_type`, [workspace, maxAttempts, token]);
       job = result.rows[0];
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
     if (!job) return null;
   }
-  return { id: job.id, task_id: job.task_id, question: job.question, agent_id: job.agent_id || 'Research worker', lease_token: token,
+  return { id: job.id, task_id: job.task_id, question: job.question, agent_id: job.agent_id || 'Research worker', job_type: job.job_type || 'owner_chat', lease_token: token,
     context: await buildChatContext(pool, memory, workspace, job.task_id, job.id) };
 }
 
@@ -143,30 +187,59 @@ export async function completeClaudeChat(pool, memory, workspace, id, body) {
     if (!validLease(job, body.lease_token)) return false;
     usage.task_id = job.task_id;
     usage.agent_id = job.agent_id || 'Research worker';
+    const stage = stages[job.job_type];
     await recordUsage(null, memory, workspace, usage);
     job.status = 'complete'; job.lease_token = null;
     state.messages.push({ id: state.nextMessageId++, workspace_id: workspace, run_id: id, task_id: job.task_id,
-      agent_id: usage.agent_id, recipient_id: 'Owner', kind: 'answer', summary: body.summary.trim(),
+      agent_id: usage.agent_id, recipient_id: stage?.recipient || 'Owner', kind: stage?.kind || 'answer', summary: body.summary.trim(),
       artifact_refs: [], evidence_refs: body.evidence_refs, demo: false, created_at: stamp() });
+    if (stage) {
+      const task = state.tasks.find((item) => item.id === job.task_id);
+      task.status = stage.status; task.updated_at = stamp();
+      state.events.push({ id: state.nextId++, workspace_id: workspace, task_id: job.task_id, role: usage.agent_id,
+        message: `${usage.agent_id} completed the ${job.job_type.replaceAll('_', ' ')} handoff.`, created_at: stamp() });
+      if (stage.next) state.chatJobs.push(nextStageJob(stage.next, job.task_id));
+    }
     return true;
   }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const result = await client.query('SELECT task_id, agent_id, status, lease_token, lease_expires_at FROM claude_chat_jobs WHERE id = $1 AND workspace_id = $2 FOR UPDATE', [id, workspace]);
+    const result = await client.query('SELECT task_id, agent_id, job_type, status, lease_token, lease_expires_at FROM claude_chat_jobs WHERE id = $1 AND workspace_id = $2 FOR UPDATE', [id, workspace]);
     const job = result.rows[0];
     if (!validLease(job, body.lease_token)) { await client.query('ROLLBACK'); return false; }
     usage.task_id = job.task_id;
     usage.agent_id = job.agent_id || 'Research worker';
+    const stage = stages[job.job_type];
     await recordUsage(client, memory, workspace, usage);
     await client.query(`INSERT INTO agent_messages (workspace_id, run_id, task_id, agent_id, recipient_id, kind, summary, evidence_refs, demo)
-      VALUES ($1, $2, $3, $4, 'Owner', 'answer', $5, $6::jsonb, false)`,
-    [workspace, id, job.task_id, usage.agent_id, body.summary.trim(), JSON.stringify(body.evidence_refs)]);
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, false)`,
+    [workspace, id, job.task_id, usage.agent_id, stage?.recipient || 'Owner', stage?.kind || 'answer', body.summary.trim(), JSON.stringify(body.evidence_refs)]);
+    if (stage) {
+      await client.query('UPDATE tasks SET status = $2, updated_at = now() WHERE id = $1', [job.task_id, stage.status]);
+      await client.query('INSERT INTO events (workspace_id, task_id, role, message) VALUES ($1, $2, $3, $4)',
+        [workspace, job.task_id, usage.agent_id, `${usage.agent_id} completed the ${job.job_type.replaceAll('_', ' ')} handoff.`]);
+      if (stage.next) {
+        const next = nextStageJob(stage.next, job.task_id);
+        await client.query(`INSERT INTO claude_chat_jobs (id, workspace_id, task_id, question, agent_id, job_type)
+          VALUES ($1, $2, $3, $4, $5, $6)`, [next.id, workspace, job.task_id, next.question, next.agent_id, next.job_type]);
+      }
+    }
     await client.query("UPDATE claude_chat_jobs SET status = 'complete', lease_token = NULL, lease_expires_at = NULL WHERE id = $1", [id]);
     await client.query('COMMIT');
     return true;
   } catch (error) { await client.query('ROLLBACK'); throw error; }
   finally { client.release(); }
+}
+
+function nextStageJob(type, taskId) {
+  const prompts = {
+    team_assign: 'Read the PM handoff, turn it into one precise research assignment with source requirements and a QA gate. Do not conduct the research.',
+    team_close: 'The owner approved the reviewed draft. Summarize the outcome, remaining limitations, and next decision for the CTO. Do not claim broader validation.',
+    cto_report: 'Give the owner a concise executive status: what was actually checked and approved, evidence limitations, remaining risks, and the next small decision. Do not authorize building automatically.',
+  };
+  return { id: randomUUID(), task_id: taskId, question: prompts[type], agent_id: stages[type].agent,
+    job_type: type, status: 'queued', attempts: 0, created_at: stamp() };
 }
 
 export async function failClaudeChat(pool, memory, workspace, id, token, code) {
@@ -177,6 +250,10 @@ export async function failClaudeChat(pool, memory, workspace, id, token, code) {
     const job = state.chatJobs.find((item) => item.id === id);
     if (!validLease(job, token)) return false;
     job.status = 'failed'; job.lease_token = null;
+    if (['team_plan', 'team_assign'].includes(job.job_type)) {
+      const task = state.tasks.find((item) => item.id === job.task_id);
+      task.status = 'team_failed'; task.updated_at = stamp();
+    }
     state.messages.push({ id: state.nextMessageId++, workspace_id: workspace, run_id: id, task_id: job.task_id,
       agent_id: 'System', recipient_id: 'Owner', kind: 'blocker', summary: reason,
       artifact_refs: [], evidence_refs: [], demo: false, created_at: stamp() });
@@ -186,8 +263,9 @@ export async function failClaudeChat(pool, memory, workspace, id, token, code) {
   try {
     await client.query('BEGIN');
     const result = await client.query(`UPDATE claude_chat_jobs SET status = 'failed', lease_token = NULL, lease_expires_at = NULL
-      WHERE id = $1 AND workspace_id = $2 AND status = 'running' AND lease_token = $3 AND lease_expires_at > now() RETURNING task_id`, [id, workspace, token]);
+      WHERE id = $1 AND workspace_id = $2 AND status = 'running' AND lease_token = $3 AND lease_expires_at > now() RETURNING task_id, job_type`, [id, workspace, token]);
     if (!result.rowCount) { await client.query('ROLLBACK'); return false; }
+    if (['team_plan', 'team_assign'].includes(result.rows[0].job_type)) await client.query("UPDATE tasks SET status = 'team_failed', updated_at = now() WHERE id = $1", [result.rows[0].task_id]);
     await client.query(`INSERT INTO agent_messages (workspace_id, run_id, task_id, agent_id, recipient_id, kind, summary, demo)
       VALUES ($1, $2, $3, 'System', 'Owner', 'blocker', $4, false)`, [workspace, id, result.rows[0].task_id, reason]);
     await client.query('COMMIT');

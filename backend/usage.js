@@ -1,7 +1,7 @@
 export const workerRoutes = Object.freeze([
-  { agent: 'CTO', worker: 'Codex', provider: 'openai', reason: 'Final synthesis and owner reporting' },
-  { agent: 'Project manager', worker: 'Codex', provider: 'openai', reason: 'Scope, acceptance criteria, and coordination' },
-  { agent: 'Team lead', worker: 'Codex', provider: 'openai', reason: 'Task decomposition and handoffs' },
+  { agent: 'CTO', worker: 'Claude', provider: 'anthropic', reason: 'Final synthesis and owner reporting through a separate local call' },
+  { agent: 'Project manager', worker: 'Claude', provider: 'anthropic', reason: 'Scope, acceptance criteria, and coordination through a separate local call' },
+  { agent: 'Team lead', worker: 'Claude', provider: 'anthropic', reason: 'Task decomposition and handoffs through a separate local call' },
   { agent: 'Research worker', worker: 'Claude', provider: 'anthropic', reason: 'Focused evidence gathering and research packets' },
   { agent: 'Quality reviewer', worker: 'Claude', provider: 'anthropic', reason: 'Separate source-checking pass on the same local subscription' },
 ]);

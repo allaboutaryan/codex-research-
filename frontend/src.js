@@ -81,14 +81,14 @@ function activeRole(step) {
 }
 
 function renderTaskRows() {
-  const label = (status) => ({ queued: 'Queued', running: 'Demo running', complete: 'Demo complete', claude_queued: 'Claude queued', claude_running: 'Claude working', awaiting_review: 'Awaiting QA', claude_failed: 'Claude failed', research_blocked: 'Research blocked', review_queued: 'QA queued', review_running: 'QA checking', review_failed: 'QA failed', review_accepted: 'Your approval needed', review_revision: 'Needs revision', review_blocked: 'QA blocked', approved: 'Approved' })[status] || status;
+  const label = (status) => ({ queued: 'Queued', running: 'Demo running', complete: 'Demo complete', planning_queued: 'PM planning', lead_queued: 'Lead assigning', team_failed: 'Team handoff failed', claude_queued: 'Claude queued', claude_running: 'Claude working', awaiting_review: 'Awaiting QA', claude_failed: 'Claude failed', research_blocked: 'Research blocked', review_queued: 'QA queued', review_running: 'QA checking', review_failed: 'QA failed', review_accepted: 'Your approval needed', review_revision: 'Needs revision', review_blocked: 'QA blocked', approved: 'Approved' })[status] || status;
   return data.tasks.length ? data.tasks.map((task) => {
     const hasCitedDraft = Boolean(data.reviewPackets?.[task.id]?.draft?.evidence_refs?.length);
     const retryResearch = ['queued', 'claude_failed', 'research_blocked', 'review_revision', 'review_blocked'].includes(task.status) || (task.status === 'awaiting_review' && !hasCitedDraft);
     const canReview = ['awaiting_review', 'review_failed'].includes(task.status) && hasCitedDraft;
     return `<div class="task-row ${task.id === selectedTask ? 'selected' : ''}" data-task="${escapeHTML(task.id)}">
     <button class="task-select" type="button" data-select="${escapeHTML(task.id)}"><span class="task-title">${escapeHTML(task.title)}</span><span class="task-meta">${escapeHTML(task.brief || 'No extra context')} · ${formatTime(task.created_at)}</span></button>
-    <div class="task-end"><span class="pill ${escapeHTML(task.status)}">${escapeHTML(label(task.status))}</span>${task.status === 'queued' ? `<button class="run-btn demo-run" type="button" data-run="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''} title="Scripted walkthrough; no AI call">Preview demo</button>` : ''}${retryResearch ? `<button class="run-btn claude-run" type="button" data-run-claude="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''} title="Queues work for your local Claude worker">${task.status === 'queued' ? 'Queue for Claude' : 'Retry research'}</button>` : ''}${canReview ? `<button class="run-btn qa-run" type="button" data-run-review="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>${task.status === 'review_failed' ? 'Retry QA' : 'Run QA'}</button>` : ''}${task.status === 'review_accepted' ? '<a class="task-chat-link" href="#approvals">Review decision →</a>' : ''}</div>
+    <div class="task-end"><span class="pill ${escapeHTML(task.status)}">${escapeHTML(label(task.status))}</span>${task.status === 'queued' ? `<button class="run-btn demo-run" type="button" data-run="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''} title="Scripted walkthrough; no AI call">Preview demo</button>` : ''}${['queued', 'team_failed'].includes(task.status) ? `<button class="run-btn claude-run" type="button" data-run-team="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''} title="Runs PM, lead, research, QA, owner approval, PM and CTO as separate calls">${task.status === 'team_failed' ? 'Retry team' : 'Run full team'}</button>` : ''}${retryResearch ? `<button class="run-btn claude-run" type="button" data-run-claude="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''} title="Queues work for your local Claude worker">${task.status === 'queued' ? 'Research only' : 'Retry research'}</button>` : ''}${canReview ? `<button class="run-btn qa-run" type="button" data-run-review="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>${task.status === 'review_failed' ? 'Retry QA' : 'Run QA'}</button>` : ''}${task.status === 'review_accepted' ? '<a class="task-chat-link" href="#approvals">Review decision →</a>' : ''}</div>
   </div>`; }).join('') : '<div class="empty">Add a task to see its handoffs here.</div>';
 }
 
@@ -161,7 +161,7 @@ function renderOverview() {
           <div class="role-status"><span></span>${currentRole === role.label ? active.status === 'claude_running' ? 'Working now' : 'Demo step' : role.label === 'Research worker' ? claudeStatus === 'online' ? 'Local Claude online' : 'Local Claude offline' : 'Planned role'}</div>
         </div>`).join('')}
       </div>
-      <div class="flow-foot">A separate Claude QA pass is available; it is not cross-provider review. Other model-backed roles remain planned. <a href="#approvals">Open approvals →</a></div>
+      <div class="flow-foot">Full-team tasks use separate local Claude calls for PM, lead, research, QA, and CTO. QA is not cross-provider; the owner approval gate remains. <a href="#approvals">Open approvals →</a></div>
     </details>`;
 }
 
@@ -211,7 +211,7 @@ function renderChats() {
       <div><div class="eyebrow">SHARED WORKROOM / DIRECT MESSAGES</div><h1>Agent chats</h1><p>Message a worker directly, or follow the shared conversation on each task.</p></div>
       <span class="demo-tag">${data.mode === 'claude_pilot' ? 'MIXED FEED · REAL MESSAGES LABELED' : 'SCRIPTED DEMO · 0 MODEL CALLS'}</span>
     </section>
-    <div class="chat-explainer">The Research worker and Quality reviewer can answer you individually through separate local Claude calls. Direct replies are not formal QA decisions. Task threads show research, QA, decisions, and labeled demos. Claude uses bounded context, not the entire chat history. This pilot has no account login yet: do not enter credentials or private research. <a href="${REPO}/blob/main/agents/PROTOCOL.md" target="_blank" rel="noopener noreferrer">Agent message protocol ↗</a></div>
+    <div class="chat-explainer">All five roles can answer you individually through separate local Claude calls. Direct replies are not formal QA decisions. Task threads show real handoffs and labeled demos. Claude uses bounded context, not the entire chat history. This pilot has no account login yet: do not enter credentials or private research. <a href="${REPO}/blob/main/agents/PROTOCOL.md" target="_blank" rel="noopener noreferrer">Agent message protocol ↗</a></div>
     <details class="panel context-panel" ${document.querySelector('.context-panel')?.open ? 'open' : ''}>
       <summary>Project goal and memory <span>View or edit the context Claude receives ↗</span></summary>
       <form id="context-form" class="context-form">
@@ -224,18 +224,18 @@ function renderChats() {
     <section class="panel ask-panel">
       <div class="panel-head"><div><div class="eyebrow">OWNER ↔ LOCAL CLAUDE AGENTS</div><h2>Message a worker</h2></div><span class="panel-counter">${pendingQuestions} pending · local worker ${usageData?.connections?.find((item) => item.provider === 'anthropic')?.status === 'online' ? 'online' : 'offline'}</span></div>
       <form id="ask-form" class="ask-form">
-        <div class="ask-field"><label for="chat-recipient">Worker</label><select id="chat-recipient"><option value="Research worker" ${chatTargetAgent === 'Research worker' ? 'selected' : ''}>Research worker · investigate</option><option value="Quality reviewer" ${chatTargetAgent === 'Quality reviewer' ? 'selected' : ''}>Quality reviewer · assess</option></select></div>
+        <div class="ask-field"><label for="chat-recipient">Agent</label><select id="chat-recipient">${roles.map((role) => `<option value="${escapeHTML(role.label)}" ${chatTargetAgent === role.label ? 'selected' : ''}>${escapeHTML(role.label)} · ${escapeHTML(role.detail)}</option>`).join('')}</select></div>
         <div class="ask-field"><label for="chat-task-picker">Task</label><select id="chat-task-picker" required>${data.tasks.map((task) => `<option value="${escapeHTML(task.id)}" ${chatTargetTask === task.id ? 'selected' : ''}>${escapeHTML(task.title)}</option>`).join('')}</select></div>
         <div class="ask-field"><label for="owner-question">Your question</label><textarea id="owner-question" rows="2" maxlength="2000" required minlength="3" placeholder="What did we learn, what remains uncertain, or what should we do next?"></textarea></div>
         <button type="submit" ${busy || !data.tasks.length ? 'disabled' : ''}>Send question →</button>
       </form>
-      <small>${data.tasks.length ? 'Messages wait if your local worker is offline.' : '<a href="#tasks">Create a task first →</a>'} Both roles use your local Claude subscription; reviewer DMs do not change the formal QA verdict.</small>
+      <small>${data.tasks.length ? 'Messages wait if your local worker is offline.' : '<a href="#tasks">Create a task first →</a>'} All five roles use your local Claude subscription; reviewer DMs do not change the formal QA verdict.</small>
     </section>
     <div class="chat-layout">
       <section class="panel chat-tasks" aria-label="Conversation tasks">
         <div class="panel-head"><div><div class="eyebrow">CONVERSATIONS</div><h2>${chatLane === 'direct' ? 'Direct messages' : 'Task threads'}</h2></div><span class="panel-counter">${data.messages.length} messages</span></div>
         <div class="chat-lanes"><button type="button" data-chat-lane="task" class="${chatLane === 'task' ? 'selected' : ''}">Task threads</button><button type="button" data-chat-lane="direct" class="${chatLane === 'direct' ? 'selected' : ''}">Direct messages</button></div>
-        ${chatLane === 'direct' ? `<div class="chat-dm-list"><button class="chat-task ${dmAgent === 'Research worker' ? 'selected' : ''}" type="button" data-dm-agent="Research worker"><span>Research worker</span><small>Investigations and evidence drafts</small></button><button class="chat-task ${dmAgent === 'Quality reviewer' ? 'selected' : ''}" type="button" data-dm-agent="Quality reviewer"><span>Quality reviewer</span><small>Questions about evidence and quality</small></button></div>` : ''}
+        ${chatLane === 'direct' ? `<div class="chat-dm-list">${roles.map((role) => `<button class="chat-task ${dmAgent === role.label ? 'selected' : ''}" type="button" data-dm-agent="${escapeHTML(role.label)}"><span>${escapeHTML(role.label)}</span><small>${escapeHTML(role.detail)}</small></button>`).join('')}</div>` : ''}
         <div class="chat-task-list">
           <button class="chat-task ${chatTask === 'all' ? 'selected' : ''}" data-chat-task="all" type="button"><span>${chatLane === 'direct' ? 'All tasks' : 'All agent chats'}</span><small>${data.messages.length} messages</small></button>
           ${data.tasks.map((task) => `<button class="chat-task ${chatTask === task.id ? 'selected' : ''}" data-chat-task="${escapeHTML(task.id)}" type="button"><span>${escapeHTML(task.title)}</span><small>${data.messages.filter((message) => message.task_id === task.id).length} messages · ${escapeHTML(task.status)}</small></button>`).join('')}
@@ -435,6 +435,7 @@ function render() {
   document.querySelectorAll('[data-select]').forEach((button) => button.addEventListener('click', () => { selectedTask = button.dataset.select; render(); }));
   document.querySelectorAll('[data-run]').forEach((button) => button.addEventListener('click', () => run(button.dataset.run)));
   document.querySelectorAll('[data-run-claude]').forEach((button) => button.addEventListener('click', () => runClaude(button.dataset.runClaude)));
+  document.querySelectorAll('[data-run-team]').forEach((button) => button.addEventListener('click', () => runTeam(button.dataset.runTeam)));
   document.querySelectorAll('[data-run-review]').forEach((button) => button.addEventListener('click', () => runReview(button.dataset.runReview)));
   document.querySelectorAll('[data-decision-task]').forEach((form) => form.addEventListener('submit', ownerDecision));
   document.querySelectorAll('[data-open-thread]').forEach((button) => button.addEventListener('click', () => { chatTask = button.dataset.openThread; chatTargetTask = chatTask; chatLane = 'task'; location.hash = '#chats'; }));
@@ -598,6 +599,17 @@ async function runClaude(id) {
     busy = false;
     render();
   }
+}
+
+async function runTeam(id) {
+  busy = true;
+  try {
+    await request(`/api/tasks/${id}/start-team`, { method: 'POST' });
+    selectedTask = id;
+    error = '';
+    await refresh();
+  } catch (cause) { error = cause.message; }
+  finally { busy = false; render(); }
 }
 
 async function runReview(id) {

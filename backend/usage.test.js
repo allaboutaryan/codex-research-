@@ -34,5 +34,5 @@ test('usage ledger is per workspace, task-linked, and idempotent', async () => {
   assert.equal((await readUsage(null, memory, 'owner')).summary.total.calls, 1);
   assert.equal((await readUsage(null, memory, 'other')).summary.total.calls, 0);
   await assert.rejects(recordUsage(null, memory, 'other', entry), /Task does not belong/);
-  await assert.rejects(recordUsage(null, memory, 'owner', { ...entry, agent_id: 'CTO' }), /worker route/);
+  await assert.rejects(recordUsage(null, memory, 'owner', { ...entry, agent_id: 'CTO', provider: 'openai' }), /worker route/);
 });

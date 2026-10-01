@@ -90,4 +90,19 @@ test('browser and local Claude worker have separate permissions', async (context
   assert.match(approved.reviewPackets[task.id].review.summary, /VERDICT: ACCEPT/);
   assert.equal(approved.messages[0].agent_id, 'Owner');
   assert.equal((await (await browser('/api/usage')).json()).summary.total.totalTokens, 140);
+  const teamTask = await (await browser('/api/tasks', { method: 'POST', body: JSON.stringify({ title: 'Investigate a second need', brief: 'Use a bounded set of primary sources' }) })).json();
+  assert.equal((await browser(`/api/tasks/${teamTask.id}/start-team`, { method: 'POST' })).status, 200);
+  assert.equal((await browser(`/api/tasks/${teamTask.id}/start-team`, { method: 'POST' })).status, 409);
+  const pm = (await (await worker('/api/worker/claude/claim-chat', { method: 'POST' })).json()).job;
+  assert.equal(pm.job_type, 'team_plan');
+  assert.equal(pm.agent_id, 'Project manager');
+  assert.equal((await worker(`/api/worker/claude/chat/${pm.id}/complete`, { method: 'POST', body: JSON.stringify({
+    lease_token: pm.lease_token, summary: 'Scope one small developer problem and require primary source evidence.',
+    model: 'claude-test', request_id: '55555555-5555-4555-8555-555555555555', evidence_refs: [],
+    usage: { input_tokens: 15, output_tokens: 15, cached_input_tokens: 0, cache_write_tokens: 0, reasoning_output_tokens: 0 },
+  }) })).status, 200);
+  const lead = (await (await worker('/api/worker/claude/claim-chat', { method: 'POST' })).json()).job;
+  assert.equal(lead.job_type, 'team_assign');
+  assert.equal(lead.context.recent_task_history.at(-1).agent, 'Project manager');
+  assert.equal((await (await browser('/api/state')).json()).messages[0].recipient_id, 'Team lead');
 });

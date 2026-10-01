@@ -2,7 +2,7 @@
 
 Northstar Lab is an operations console for a research team that investigates real problems, checks evidence independently, and turns promising gaps into software-product opportunities. The long-term goal is a supervised team of AI agents whose work, decisions, costs, and daily progress are visible to the human owner.
 
-**Current status:** The [live dashboard](https://northstar-lab-woad.vercel.app/) offers a scripted workflow demo, a real owner-operated Claude Research worker, and a separate Claude Quality reviewer invocation. [Agent chats](https://northstar-lab-woad.vercel.app/#chats) has task threads and direct owner messages to either live role. [Approval inbox](https://northstar-lab-woad.vercel.app/#approvals) holds QA-accepted drafts for the owner's decision. [Worker usage](https://northstar-lab-woad.vercel.app/#usage) records completed calls by role. [Alerts & reports](https://northstar-lab-woad.vercel.app/#reports) shows blocked work and a saved 6:00 PM IST daily snapshot. Both live roles use the same local Claude subscription, so QA is a separate source-checking pass, **not cross-provider independence**. Model-backed CTO, manager, lead, per-agent written reports, and account login remain planned. Claude runs only while the owner-operated worker process and computer stay awake.
+**Current status:** The [live dashboard](https://northstar-lab-woad.vercel.app/) offers a scripted demo and an optional real five-role workflow on the owner's local Claude subscription. [Agent chats](https://northstar-lab-woad.vercel.app/#chats) has task threads and direct messages to all five roles. [Approval inbox](https://northstar-lab-woad.vercel.app/#approvals) holds QA-accepted drafts for the owner's decision. [Worker usage](https://northstar-lab-woad.vercel.app/#usage) records completed calls by role. [Alerts & reports](https://northstar-lab-woad.vercel.app/#reports) shows blocked work and a saved 6:00 PM IST daily snapshot. QA is a separate source-checking call on the **same Claude subscription**, not cross-provider independence. GitHub owner login and per-agent daily narrative reports are not live yet. Claude runs only while the owner-operated worker process and computer stay awake.
 
 ## The team
 
@@ -27,8 +27,9 @@ flowchart TD
     Worker --> QA[Independent quality reviewer]
     QA -->|Revise| Lead
     QA -->|Blocked or needs a new decision| PM
-    QA -->|Accepted| PM
-    PM -->|Closes accepted task| CTO
+    QA -->|Accepted draft| Owner
+    Owner -->|Approves reviewed draft| PM
+    PM -->|Closes owner-approved task| CTO
     CTO -->|Daily roll-up and decisions needed| Owner
 ```
 
@@ -41,7 +42,7 @@ flowchart TD
 7. **Close or continue.** The project manager closes only accepted work. A promising gap becomes a candidate for further validation, not an automatic product decision. The CTO chooses the next bounded investigation or asks the owner to decide.
 8. **Report daily.** Each active agent reports completed, in-progress, and blocked work; evidence and decisions; actual token/cost usage; and next actions. The CTO combines these into a short owner-facing summary at the owner's configured time and timezone. No activity is reported as no activity, never invented progress.
 
-The [Agent chats view](https://northstar-lab-woad.vercel.app/#chats) has task threads and direct-message views, backed by task-linked, append-only messages. The owner can address the Research worker or Quality reviewer individually; these direct answers do not change a formal verdict. A research run with **at least one cited HTTPS source** automatically queues a separate QA call. A source-free run becomes `research_blocked` and appears in [Alerts & reports](https://northstar-lab-woad.vercel.app/#reports), not the QA queue. QA publishes `ACCEPT`, `REVISE`, or `BLOCK` with checked links; `ACCEPT` goes to the [Approval inbox](https://northstar-lab-woad.vercel.app/#approvals), where an explicit browser-workspace decision approves it or requests revision. The local worker key cannot make that decision. This is not yet a true owner login: protect the browser workspace key and do not use the pilot for private material. Scripted demo handoffs remain labeled. Hidden reasoning, credentials, and raw tool output are not published. Per-agent written reports and a model-backed CTO summary remain future milestones.
+The [Agent chats view](https://northstar-lab-woad.vercel.app/#chats) has task threads and direct-message views, backed by task-linked, append-only messages. The owner can address any of the five agents individually; direct answers do not change a formal verdict. **Run full team** on a queued task starts PM planning, lead assignment, research, automatic QA when sources exist, owner approval, PM closeout, and a CTO summary. Every role is a separate measured Claude call with a visible handoff. A source-free run becomes `research_blocked` and appears in [Alerts & reports](https://northstar-lab-woad.vercel.app/#reports), not the QA queue. QA publishes `ACCEPT`, `REVISE`, or `BLOCK` with checked links; `ACCEPT` goes to the [Approval inbox](https://northstar-lab-woad.vercel.app/#approvals), where an explicit browser-workspace decision approves it or requests revision. The local worker key cannot make that decision. This is not yet a true owner login: protect the browser workspace key and do not use the pilot for private material. Scripted demo handoffs remain labeled. Hidden reasoning, credentials, and raw tool output are not published. The CTO task summary is real after an approved full-team task; an agent-written daily roll-up remains future work.
 
 ## Research artifacts and product decisions
 
@@ -62,15 +63,15 @@ The [Worker usage view](https://northstar-lab-woad.vercel.app/#usage) shows role
 
 | Agent | Current worker | Rationale |
 | --- | --- | --- |
-| CTO, project manager, team lead | Codex via OpenAI | Planning, coordination, and owner reporting |
+| CTO, project manager, team lead | Claude via Anthropic | Separate local calls for planning, coordination, and owner reporting |
 | Research worker | Claude via Anthropic | Focused investigation and evidence packet |
 | Quality reviewer | Claude via Anthropic | Separate invocation and source-checking context; not cross-provider QA |
 
-The code includes normalizers for OpenAI and Claude response token fields. Cached input and reasoning output are shown as **subsets** of input/output, not extra tokens. Claude cache-write and cache-read tokens are included once in total input. The Claude worker submits measured usage after a successful run. Codex is still a planned route; there is no OpenAI account connection, automatic account rotation, or account-token entry in the dashboard.
+The code includes normalizers for OpenAI and Claude response token fields. Cached input and reasoning output are shown as **subsets** of input/output, not extra tokens. Claude cache-write and cache-read tokens are included once in total input. The Claude worker submits measured usage after a successful run. Codex is not connected as a worker; there is no OpenAI account connection, automatic account rotation, or account-token entry in the dashboard.
 
 ## Persistent context and owner chat
 
-In [Agent chats](https://northstar-lab-woad.vercel.app/#chats), the owner can edit the **project goal** and **memory notes** and message either the Research worker or Quality reviewer about a selected task. A question is saved immediately, queued if the local worker is offline, and answered when that worker runs. Task threads include research, review, and owner decisions; direct-message views show each worker's one-to-one owner conversation. Older messages remain in PostgreSQL beyond the dashboard's latest-200 display. Chat answers are not QA-approved findings.
+In [Agent chats](https://northstar-lab-woad.vercel.app/#chats), the owner can edit the **project goal** and **memory notes** and message any role about a selected task. A question is saved immediately, queued if the local worker is offline, and answered when that worker runs. Task threads include planning, assignment, research, review, owner decisions, and closeout; direct-message views show each agent's one-to-one owner conversation. Older messages remain in PostgreSQL beyond the dashboard's latest-200 display. Chat answers are not QA-approved findings.
 
 Each Claude research run or chat answer receives the saved goal and notes, current task title/brief/status, up to 12 recent real messages on that task, and five recent real cross-task work messages. Message excerpts are capped at 700 characters apiece. **Formal QA is different:** it receives only the task brief, latest research draft, and its evidence links in a fresh model call, without the research chat history. The full PostgreSQL ledger persists beyond those bounded context packets. Important long-lived decisions should be put in memory notes. No hidden reasoning or OAuth credential is stored in chat.
 
@@ -87,7 +88,7 @@ This is for the owner's own Claude Code subscription on an owner-operated Mac or
    ```
 
    The command watches for queued work while the computer and Terminal process stay running. Use `npm run worker:claude -- --once` with the same environment variable to process at most one queued item (review, question, or research task). After updating the repository, **restart any already-running worker process** so it can claim QA jobs; the paired key does not need rotating.
-4. Add a narrowly scoped task on the dashboard and click **Queue for Claude**. The worker uses explicitly approved WebSearch/WebFetch only and submits a source-linked draft. The backend automatically queues the separate reviewer pass **only when a source is present**. A source-free draft becomes a blocker you can read and retry. Read QA's `ACCEPT`, `REVISE`, or `BLOCK` verdict in [Approval inbox](https://northstar-lab-woad.vercel.app/#approvals). An accepted draft still needs the owner's approval; a rejected or blocked draft can be re-queued for research. Direct questions to either worker use the same local process but do not change the formal QA status.
+4. Add a narrowly scoped task on the dashboard and click **Run full team** for PM → lead → research → QA → owner → PM → CTO, or **Research only** to save management calls. The worker uses explicitly approved WebSearch/WebFetch only and submits a source-linked draft. The backend automatically queues the separate reviewer pass **only when a source is present**. A source-free draft becomes a blocker you can read and retry. Read QA's `ACCEPT`, `REVISE`, or `BLOCK` verdict in [Approval inbox](https://northstar-lab-woad.vercel.app/#approvals). An accepted draft still needs the owner's approval; a rejected or blocked draft can be re-queued for research. Direct questions to any role use the same local process but do not change the formal QA status.
 
 Research and QA runs use Sonnet, at most four model turns and an approximately $0.50 **list-price** budget guard each (not a claim about subscription billing), plus a six-minute timeout. Direct chats allow three turns and a $0.30 guard. Claude has no file, shell, browser automation, or MCP tools in this pilot. The reviewer can still miss errors; treat citations as unverified until checked by a person for consequential decisions. The local worker key can authorize draft and review submission in this workspace; do not paste it into chat or share it. If the Mac sleeps, the worker stops; UptimeRobot does not run it.
 
@@ -96,21 +97,22 @@ Research and QA runs use Sonnet, at most four model turns and an approximately $
 | Capability | Status |
 | --- | --- |
 | Dashboard and scripted PM → lead → worker → QA → revision → CTO walkthrough | Live demo |
-| Task/event API on Render and frontend on Vercel | Live demo |
+| Task/event API on Render and frontend on Vercel | Live |
 | UptimeRobot check of the API `/health` endpoint every five minutes | Configured |
-| [Agent chats](https://northstar-lab-woad.vercel.app/#chats) with task threads and direct owner-to-worker messages | Live for Research worker and Quality reviewer; other roles are scripted/planned |
+| [Agent chats](https://northstar-lab-woad.vercel.app/#chats) with task threads and direct owner-to-agent messages | Live for all five roles through separate local Claude calls |
 | [Approval inbox](https://northstar-lab-woad.vercel.app/#approvals) and review state machine | Live; separate Claude QA verdict, then explicit owner approval/revision |
 | PostgreSQL persistence of demo tasks, events, and agent messages | Connected on Render; the free database expires October 30, 2026 unless upgraded |
-| [Worker usage view](https://northstar-lab-woad.vercel.app/#usage), Codex/Claude routing, and usage ledger | Live; Claude calls record usage after successful runs |
+| [Worker usage view](https://northstar-lab-woad.vercel.app/#usage) and usage ledger | Live; Claude calls record usage after successful runs; Codex not connected |
 | Owner-operated Claude Code research worker with separate pairing key | Implemented; runs only while the owner starts and keeps the local process alive |
 | Durable project goal, memory notes, and bounded context for Claude runs | Implemented; full message history is retained, but only selected recent excerpts enter each model call |
 | [Alerts & reports](https://northstar-lab-woad.vercel.app/#reports) | Live stuck/decision alerts and a saved, factual daily snapshot at approximately 6:00 PM IST |
-| Telegram alert/report delivery | Implemented but off until a private bot, chat ID, and workspace ID are configured on Render |
-| Versioned role skills and shared message/report contract | Research worker and Quality reviewer instructions used; other roles remain specifications |
-| Cross-provider QA, per-agent narrative reports, model-backed CTO roll-up | Planned |
+| Telegram alert/report delivery | Configured for the owner's private bot; a test stuck alert was delivered; first daily report awaits 6:00 PM IST |
+| Versioned role skills and shared message/report contract | All five role instructions loaded by the local worker |
+| Model-backed task CTO summary | Queued after owner approval of a full-team task; no completed live task yet |
+| Cross-provider QA and per-agent daily narrative reports | Planned |
 | Full ten-year literature review, user-demand validation, authenticated users | Planned |
 
-The backend saves append-only `agent_messages`, task events, measured `usage_events`, and daily report snapshots for completed Claude runs. The dashboard puts task creation and Claude setup first, keeps the planned role diagram collapsible, and labels real work separately from demos. While the tab is visible, the frontend polls workflow updates every 1.5 seconds and usage/reports every 30 seconds; background tabs stop polling and refresh when reopened. The next engineering milestones are owner authentication, cross-provider QA if an approved route becomes available, explicit user-demand validation, a safe artifact/research repository workflow, and per-agent narrative reporting. A lightweight server timer checks for the 6:00 PM IST report every minute; the `/health` ping also checks it. This is **best-effort on Render Free**: sleep, restart, or an outage can delay it. UptimeRobot is a health check and keep-alive, **not a guaranteed scheduler or Claude worker**.
+The backend saves append-only `agent_messages`, task events, measured `usage_events`, and daily report snapshots for completed Claude runs. The dashboard puts task creation and Claude setup first and labels real work separately from demos. While the tab is visible, the frontend polls workflow updates every 1.5 seconds and usage/reports every 30 seconds; background tabs stop polling and refresh when reopened. The next engineering milestones are GitHub owner authentication restricted to `allaboutaryan`, cross-provider QA if an approved route becomes available, explicit user-demand validation, a safe artifact/research repository workflow, and per-agent narrative reporting. A lightweight server timer checks for the 6:00 PM IST report every minute; the `/health` ping also checks it. This is **best-effort on Render Free**: sleep, restart, or an outage can delay it. UptimeRobot is a health check and keep-alive, **not a guaranteed scheduler or Claude worker**.
 
 ## Telegram notifications and daily reports
 
