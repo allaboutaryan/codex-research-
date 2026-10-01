@@ -1,6 +1,7 @@
 import './style.css';
 import './chats.css';
 import './usage.css';
+import './ux.css';
 
 const API = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
 const REPO = 'https://github.com/allaboutaryan/codex-research-';
@@ -23,6 +24,7 @@ const roles = [
 let data = { tasks: [], events: [], messages: [], modelCalls: 0, inputTokens: 0, outputTokens: 0, database: 'memory' };
 let usageData = null;
 let contextData = null;
+let contextNote = '';
 let usageError = '';
 let pairingNote = '';
 let pairingKey = null;
@@ -77,7 +79,7 @@ function renderTaskRows() {
   const label = (status) => ({ queued: 'Queued', running: 'Demo running', complete: 'Demo complete', claude_queued: 'Claude queued', claude_running: 'Claude working', awaiting_review: 'Awaiting QA', claude_failed: 'Claude failed' })[status] || status;
   return data.tasks.length ? data.tasks.map((task) => `<div class="task-row ${task.id === selectedTask ? 'selected' : ''}" data-task="${escapeHTML(task.id)}">
     <button class="task-select" type="button" data-select="${escapeHTML(task.id)}"><span class="task-title">${escapeHTML(task.title)}</span><span class="task-meta">${escapeHTML(task.brief || 'No extra context')} · ${formatTime(task.created_at)}</span></button>
-    <div class="task-end"><span class="pill ${escapeHTML(task.status)}">${escapeHTML(label(task.status))}</span>${task.status === 'queued' ? `<button class="run-btn" type="button" data-run="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>Run demo</button>` : ''}${['queued', 'claude_failed'].includes(task.status) ? `<button class="run-btn claude-run" type="button" data-run-claude="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>${task.status === 'claude_failed' ? 'Retry Claude' : 'Run Claude'}</button>` : ''}</div>
+    <div class="task-end"><span class="pill ${escapeHTML(task.status)}">${escapeHTML(label(task.status))}</span>${task.status === 'queued' ? `<button class="run-btn demo-run" type="button" data-run="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''} title="Scripted walkthrough; no AI call">Preview demo</button>` : ''}${['queued', 'claude_failed'].includes(task.status) ? `<button class="run-btn claude-run" type="button" data-run-claude="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''} title="Queues work for your local Claude worker">${task.status === 'claude_failed' ? 'Retry Claude' : 'Queue for Claude'}</button>` : ''}${task.status === 'awaiting_review' ? '<a class="task-chat-link" href="#chats">View draft →</a>' : ''}</div>
   </div>`).join('') : '<div class="empty">Add a task to see its handoffs here.</div>';
 }
 
@@ -90,46 +92,61 @@ function renderOverview() {
   if (!selectedTask || !data.tasks.some((task) => task.id === selectedTask)) selectedTask = active?.id || data.tasks[0]?.id || null;
   const focusEvents = data.events.filter((event) => !selectedTask || event.task_id === selectedTask);
   const currentRole = active ? active.status === 'claude_running' ? 'Research worker' : activeRole(active.step) : '';
+  const claudeStatus = usageData?.connections?.find((item) => item.provider === 'anthropic')?.status;
+  const next = !claudeStatus || claudeStatus === 'not_connected'
+    ? { title: 'Connect your Claude worker', detail: 'Pair Claude Code once, then run the worker on your computer.', href: '#usage', action: 'Open worker setup' }
+    : claudeStatus === 'paired_offline'
+      ? { title: 'Start the local worker', detail: 'Your workspace is paired. Claude answers and research run while the local worker is open.', href: '#usage', action: 'See start command' }
+      : !data.tasks.length
+        ? { title: 'Create a focused assignment', detail: 'Give Claude one clear research question and any scope or date constraints.', href: '#tasks', action: 'Add a task' }
+        : data.tasks.some((task) => task.status === 'queued' || task.status === 'claude_failed')
+          ? { title: 'Queue a task for Claude', detail: 'A task is ready. Select Queue for Claude to start real research.', href: '#tasks', action: 'Open task queue' }
+          : { title: 'Ask about the work', detail: 'Read task handoffs and ask the Research worker a question.', href: '#chats', action: 'Open agent chats' };
 
   return `
     <section class="intro">
-      <div><div class="eyebrow">RESEARCH COMPANY / CONTROL ROOM</div><h1>Agent operations</h1><p>Watch work move from assignment to independent review.</p></div>
+      <div><div class="eyebrow">RESEARCH COMPANY / CONTROL ROOM</div><h1>Research workspace</h1><p>Create focused tasks, follow evidence, and ask the live worker what comes next.</p></div>
       <span class="demo-tag">${data.mode === 'claude_pilot' ? 'CLAUDE PILOT · QA REQUIRED' : 'DEMO MODE · NO RESEARCH RUNS'}</span>
     </section>
-    <section class="metrics" aria-label="Workspace metrics">
-      <div class="metric"><span>Total tasks</span><strong>${data.tasks.length}</strong><small>${queued.length} waiting in queue</small></div>
-      <div class="metric"><span>Active runs</span><strong>${running.length}</strong><small>${running.length ? 'Workflow in progress' : 'No work in progress'}</small></div>
-      <div class="metric"><span>${awaitingQA.length ? 'Awaiting QA' : 'Completed'}</span><strong>${awaitingQA.length || complete.length}</strong><small>${awaitingQA.length ? 'Claude drafts, not accepted findings' : 'Demo walkthroughs'}</small></div>
-      <div class="metric accent"><span>AI tokens used</span><strong>${formatNumber(usageData?.summary?.total?.totalTokens)}</strong><small>${formatNumber(usageData?.summary?.total?.calls)} actual model calls</small></div>
-    </section>
-    <section class="flow-section">
-      <div class="section-heading"><div><div class="eyebrow">THE OPERATING LOOP</div><h2>Team workflow</h2></div><div class="section-note">${active ? `Active: ${escapeHTML(active.title)}` : 'Waiting for a task'}</div></div>
-      <div class="flow" aria-label="Agent workflow">
-        ${roles.map((role, index) => `<div class="flow-card ${currentRole === role.label ? 'is-active' : ''}">
-          <div class="flow-top"><span class="step">0${index + 1}</span><span class="role-icon">${role.short}</span></div>
-          <h3>${role.label}</h3><p>${role.detail}</p>
-          <div class="role-status"><span></span>${currentRole === role.label ? 'Working now' : 'Ready'}</div>
-        </div>`).join('')}
-      </div>
-      <div class="flow-foot"><span>↳</span> Review feedback returns work to the researcher before the manager closes the run. <a href="#chats">Watch agent chats →</a></div>
+    <section class="panel action-banner" aria-label="Recommended next step">
+      <div><div class="eyebrow">YOUR NEXT STEP</div><h2>${escapeHTML(next.title)}</h2><p>${escapeHTML(next.detail)}</p></div>
+      <a href="${next.href}">${escapeHTML(next.action)} <span aria-hidden="true">→</span></a>
     </section>
     <div class="lower-grid">
       <section id="tasks" class="panel tasks-panel">
-        <div class="panel-head"><div><div class="eyebrow">ASSIGNMENTS</div><h2>Task queue</h2></div><span class="panel-counter">${data.tasks.length} tasks</span></div>
+        <div class="panel-head"><div><div class="eyebrow">START HERE</div><h2>Tasks</h2></div><span class="panel-counter">${data.tasks.length} task${data.tasks.length === 1 ? '' : 's'}</span></div>
         <form id="task-form" class="task-form">
-          <label for="title">New task · choose demo or Claude after adding</label>
-          <div class="form-row"><input id="title" name="title" maxlength="120" required minlength="3" placeholder="e.g. Explore developer workflow gaps" /><button type="submit" ${busy ? 'disabled' : ''}>Add task</button></div>
-          <input id="brief" name="brief" maxlength="1000" placeholder="Research scope, dates, and constraints (optional)" />
+          <label for="title">What should we investigate?</label>
+          <div class="form-row"><input id="title" name="title" maxlength="120" required minlength="3" placeholder="e.g. Find gaps in developer onboarding research" /><button type="submit" ${busy ? 'disabled' : ''}>Create task</button></div>
+          <label class="brief-label" for="brief">Scope or constraints <span>(optional)</span></label>
+          <input id="brief" name="brief" maxlength="1000" placeholder="Dates, source types, questions to answer…" />
         </form>
         <div class="task-list">${renderTaskRows()}</div>
       </section>
       <section id="activity" class="panel activity-panel">
-        <div class="panel-head"><div><div class="eyebrow">EVENT LOG</div><h2>Live activity</h2></div><span class="live-label"><i></i>Updates every 1.5s</span></div>
+        <div class="panel-head"><div><div class="eyebrow">PROGRESS</div><h2>Recent activity</h2></div><span class="live-label"><i></i>Live</span></div>
         <div class="activity-list" aria-live="polite">
           ${focusEvents.length ? focusEvents.slice(0, 12).map((event) => `<div class="event"><div class="event-pin"></div><div class="event-body"><div><strong>${escapeHTML(event.role)}</strong><time>${formatTime(event.created_at)}</time></div><p>${escapeHTML(event.message)}</p></div></div>`).join('') : '<div class="empty">Events will appear as the workflow runs.</div>'}
         </div>
       </section>
-    </div>`;
+    </div>
+    <section class="metrics overview-metrics" aria-label="Workspace metrics">
+      <div class="metric"><span>Total tasks</span><strong>${data.tasks.length}</strong><small>${queued.length} waiting in queue</small></div>
+      <div class="metric"><span>Active runs</span><strong>${running.length}</strong><small>${running.length ? 'Workflow in progress' : 'No work in progress'}</small></div>
+      <div class="metric"><span>${awaitingQA.length ? 'Awaiting QA' : 'Demo completed'}</span><strong>${awaitingQA.length || complete.length}</strong><small>${awaitingQA.length ? 'Drafts, not accepted findings' : 'Scripted walkthroughs'}</small></div>
+      <div class="metric accent"><span>AI tokens used</span><strong>${formatNumber(usageData?.summary?.total?.totalTokens)}</strong><small>${formatNumber(usageData?.summary?.total?.calls)} actual model calls</small></div>
+    </section>
+    <details class="workflow-details" ${document.querySelector('.workflow-details')?.open ? 'open' : ''}>
+      <summary>How the team workflow is designed <span>Roles and review gates</span></summary>
+      <div class="flow" aria-label="Agent workflow">
+        ${roles.map((role, index) => `<div class="flow-card ${currentRole === role.label ? 'is-active' : ''}">
+          <div class="flow-top"><span class="step">0${index + 1}</span><span class="role-icon">${role.short}</span></div>
+          <h3>${role.label}</h3><p>${role.detail}</p>
+          <div class="role-status"><span></span>${currentRole === role.label ? active.status === 'claude_running' ? 'Working now' : 'Demo step' : role.label === 'Research worker' ? claudeStatus === 'online' ? 'Local Claude online' : 'Local Claude offline' : 'Planned role'}</div>
+        </div>`).join('')}
+      </div>
+      <div class="flow-foot">Independent QA and the other model-backed roles are not live yet. <a href="#chats">See real and demo messages →</a></div>
+    </details>`;
 }
 
 function renderRefs(refs, label) {
@@ -180,16 +197,17 @@ function renderChats() {
         <label for="project-goal">Project goal</label><textarea id="project-goal" maxlength="1500" required>${escapeHTML(contextData?.mission || '')}</textarea>
         <label for="project-notes">Owner memory notes · key decisions, constraints, and facts to retain</label><textarea id="project-notes" maxlength="2000" placeholder="e.g. Prioritize developer tools; validate demand before building.">${escapeHTML(contextData?.notes || '')}</textarea>
         <button type="submit" ${busy || !contextData ? 'disabled' : ''}>Save project memory</button>
+        ${contextNote ? `<span class="context-note" role="status">${escapeHTML(contextNote)}</span>` : ''}
       </form>
     </details>
     <section class="panel ask-panel">
-      <div class="panel-head"><div><div class="eyebrow">OWNER ↔ RESEARCH WORKER</div><h2>Ask Claude about the work</h2></div><span class="panel-counter">${pendingQuestions} waiting · replies need local worker</span></div>
+      <div class="panel-head"><div><div class="eyebrow">OWNER ↔ RESEARCH WORKER</div><h2>Ask Claude</h2></div><span class="panel-counter">${pendingQuestions} pending · local worker ${usageData?.connections?.find((item) => item.provider === 'anthropic')?.status === 'online' ? 'online' : 'offline'}</span></div>
       <form id="ask-form" class="ask-form">
-        <label for="chat-task-picker">Task context</label><select id="chat-task-picker" required>${data.tasks.map((task) => `<option value="${escapeHTML(task.id)}" ${chatTargetTask === task.id ? 'selected' : ''}>${escapeHTML(task.title)}</option>`).join('')}</select>
-        <label for="owner-question">Your question</label><textarea id="owner-question" maxlength="2000" required minlength="3" placeholder="Ask what we found, what remains uncertain, or what to do next…"></textarea>
-        <button type="submit" ${busy || !data.tasks.length ? 'disabled' : ''}>Send to Claude</button>
+        <div class="ask-field"><label for="chat-task-picker">Task</label><select id="chat-task-picker" required>${data.tasks.map((task) => `<option value="${escapeHTML(task.id)}" ${chatTargetTask === task.id ? 'selected' : ''}>${escapeHTML(task.title)}</option>`).join('')}</select></div>
+        <div class="ask-field"><label for="owner-question">Your question</label><textarea id="owner-question" rows="2" maxlength="2000" required minlength="3" placeholder="What did we learn, what remains uncertain, or what should we do next?"></textarea></div>
+        <button type="submit" ${busy || !data.tasks.length ? 'disabled' : ''}>Send question →</button>
       </form>
-      <small>Only the Research worker is live today. Other roles remain scripted until connected. Questions queue while your local worker is offline.</small>
+      <small>${data.tasks.length ? 'Questions wait if your local worker is offline.' : '<a href="#tasks">Create a task first →</a>'} Only the Research worker is live; other roles are still scripted.</small>
     </section>
     <div class="chat-layout">
       <section class="panel chat-tasks" aria-label="Conversation tasks">
@@ -201,7 +219,7 @@ function renderChats() {
         <div class="chat-skills"><div class="eyebrow">AGENT SKILLS ON GITHUB</div>${roles.map((role) => `<a href="${skillURL(role.label)}" target="_blank" rel="noopener noreferrer">${escapeHTML(role.label)} <span>↗</span></a>`).join('')}</div>
       </section>
       <section class="panel chat-thread" aria-label="Agent conversation">
-        <div class="panel-head"><div><div class="eyebrow">VISIBLE TEAM HANDOFFS</div><h2>${escapeHTML(selected?.title || 'All conversations')}</h2></div><span class="live-label"><i></i>Updates every 1.5s</span></div>
+        <div class="panel-head"><div><div class="eyebrow">VISIBLE CONVERSATION</div><h2>${escapeHTML(selected?.title || 'All conversations')}</h2></div><span class="live-label"><i></i>Live updates</span></div>
         <div class="chat-controls"><label for="chat-agent-filter">Filter by sender</label><select id="chat-agent-filter"><option value="all" ${chatAgent === 'all' ? 'selected' : ''}>All agents</option>${roles.map((role) => `<option value="${escapeHTML(role.label)}" ${chatAgent === role.label ? 'selected' : ''}>${escapeHTML(role.label)}</option>`).join('')}</select></div>
         <div class="chat-feed" role="log" aria-label="Agent messages" aria-live="polite">
           ${messages.length ? messages.map(renderMessage).join('') : `<div class="empty chat-empty">${data.tasks.length ? 'No messages for this filter yet. Ask Claude or run a task.' : 'No conversations yet. Add a task to begin.'}<br/><a href="#tasks">Go to task queue →</a></div>`}
@@ -221,11 +239,25 @@ function renderUsage() {
   const events = usageData?.events || [];
   return `
     <section class="intro">
-      <div><div class="eyebrow">PROVIDER CONNECTIONS / MEASURED ACTIVITY</div><h1>Worker usage</h1><p>Token accounting for this workspace’s actual worker calls.</p></div>
+      <div><div class="eyebrow">WORKER SETUP / MEASURED ACTIVITY</div><h1>Connect &amp; usage</h1><p>Start your local Claude worker and track the calls made in this workspace.</p></div>
       <span class="demo-tag">${connections.some((item) => item.provider === 'anthropic' && item.status === 'online') ? 'LOCAL CLAUDE WORKER ONLINE' : 'NO WORKER ONLINE'}</span>
     </section>
-    <div class="usage-explainer">This page does not read your entire ChatGPT or Claude account. It records completed Northstar worker calls only; scripted demo chats never count. Interrupted or failed calls may not report usage, so provider totals can be higher. Subscription balances and reset times must be checked with each provider. Claude Code login stays on your local machine.</div>
     ${usageError ? `<div class="alert" role="alert">${escapeHTML(usageError)}</div>` : ''}
+    <section class="panel pairing-panel" id="claude-setup">
+      <div class="panel-head"><div><div class="eyebrow">GET STARTED</div><h2>Connect Claude Code locally</h2></div><span class="panel-counter">No account token sent to Render</span></div>
+      <ol class="setup-steps">
+        <li><span>Sign in to Claude Code on your computer.</span></li>
+        <li><span>Pair this workspace and copy the one-time key below.</span></li>
+        <li><span>In the repository’s <code>backend</code> folder, run the command shown below and keep Terminal open.</span></li>
+      </ol>
+      <div class="setup-actions"><button id="pair-worker" type="button">${['online', 'paired_offline'].includes(claudeConnection?.status) ? 'Rotate worker key' : 'Pair local Claude'}</button>${pairingKey ? '<button id="copy-worker-key" type="button">Copy one-time worker key</button>' : ''}<span class="pairing-note" role="status">${escapeHTML(pairingNote)}</span></div>
+      <pre>NORTHSTAR_WORKER_KEY="$(pbpaste)" npm run worker:claude</pre>
+      <small>Then create a task or ask a question. Claude runs only while the local worker is open. Pairing again revokes the previous key. <a href="${REPO}/blob/main/README.md#run-the-claude-research-worker" target="_blank" rel="noopener noreferrer">Full setup guide ↗</a></small>
+    </section>
+    <details class="usage-explainer" ${document.querySelector('.usage-explainer')?.open ? 'open' : ''}>
+      <summary>What do these usage numbers include?</summary>
+      <p>Only completed Northstar worker calls are recorded, not your entire Claude or ChatGPT account. Scripted demo chats never count. Interrupted calls may not report usage; provider totals can be higher. Check balances and reset times with each provider. Claude Code sign-in stays on your computer.</p>
+    </details>
     <section class="metrics" aria-label="Actual worker usage">
       <div class="metric accent"><span>Actual model calls</span><strong>${formatNumber(total.calls)}</strong><small>Demo handoffs excluded</small></div>
       <div class="metric"><span>Input tokens</span><strong>${formatNumber(total.inputTokens)}</strong><small>Includes cached input</small></div>
@@ -241,13 +273,6 @@ function renderUsage() {
         <a href="${item.provider === 'openai' ? 'https://chatgpt.com/#settings/Usage' : 'https://claude.ai/settings/usage'}" target="_blank" rel="noopener noreferrer">Check provider usage ↗</a>
       </article>`).join('') || '<div class="empty">Loading provider status…</div>'}</div>
     </section>
-    <section class="panel pairing-panel">
-      <div class="panel-head"><div><div class="eyebrow">OWNER-OPERATED WORKER</div><h2>Connect Claude Code locally</h2></div><span class="panel-counter">No account token sent to Render</span></div>
-      <p>Claude Code must be signed in on your own computer. Pair this workspace, copy the one-time worker key, then start the worker from the repository’s <code>backend</code> folder. Keep the key private. Pairing again revokes the previous key.</p>
-      <button id="pair-worker" type="button">${['online', 'paired_offline'].includes(claudeConnection?.status) ? 'Rotate worker key' : 'Pair local Claude'}</button>${pairingKey ? '<button id="copy-worker-key" type="button">Copy one-time worker key</button>' : ''}<span class="pairing-note" role="status">${escapeHTML(pairingNote)}</span>
-      <pre>NORTHSTAR_WORKER_KEY="$(pbpaste)" npm run worker:claude</pre>
-      <small>The worker runs while this computer and command are running. It uses Claude Code subscription sign-in, web search/fetch only, a per-run budget and turn cap, and stops drafts at independent QA.</small>
-    </section>
     <section class="panel routing-panel">
       <div class="panel-head"><div><div class="eyebrow">ROLE ASSIGNMENTS</div><h2>Worker routing</h2></div><span class="panel-counter">${claudeConnection?.status === 'online' ? 'Claude research worker available' : 'Start local Claude to activate research'}</span></div>
       <div class="routing-table" role="table" aria-label="Planned worker routes">
@@ -262,7 +287,7 @@ function renderUsage() {
 }
 
 function signature() {
-  return JSON.stringify([data.tasks, data.events, data.messages, data.chatJobs, data.database, data.mode, usageData, contextData, usageError, pairingNote, connection, error, selectedTask, chatTask, chatAgent, chatTargetTask, currentView(), busy]);
+  return JSON.stringify([data.tasks, data.events, data.messages, data.chatJobs, data.database, data.mode, usageData, contextData, contextNote, usageError, pairingNote, connection, error, selectedTask, chatTask, chatAgent, chatTargetTask, currentView(), busy]);
 }
 
 function render() {
@@ -283,7 +308,7 @@ function render() {
           <a class="nav-item ${location.hash === '#tasks' ? 'active' : ''}" href="#tasks"><span class="nav-glyph">▤</span> Task queue <span class="nav-count">${data.tasks.length}</span></a>
           <a class="nav-item ${location.hash === '#activity' ? 'active' : ''}" href="#activity"><span class="nav-glyph">◷</span> Activity</a>
           <a class="nav-item ${view === 'chats' ? 'active' : ''}" href="#chats"><span class="nav-glyph">◉</span> Agent chats <span class="nav-count">${data.messages.length}</span></a>
-          <a class="nav-item ${view === 'usage' ? 'active' : ''}" href="#usage"><span class="nav-glyph">◈</span> Worker usage</a>
+          <a class="nav-item ${view === 'usage' ? 'active' : ''}" href="#usage"><span class="nav-glyph">◈</span> Connect &amp; usage</a>
         </nav>
         <div class="side-bottom">
           <div class="side-label">CURRENT MODE</div>
@@ -294,8 +319,8 @@ function render() {
       </aside>
       <main id="${view}" class="main">
         <header class="topbar">
-          <div class="crumb">Workspace <span>/</span> ${view === 'chats' ? 'Agent chats' : view === 'usage' ? 'Worker usage' : 'Operations'}</div>
-          <div class="top-actions"><span class="status ${connection === 'connected' ? 'online' : 'offline'}"><i></i>${connection === 'connected' ? 'Live backend' : 'Connecting'}</span><span class="avatar">CTO</span></div>
+          <div class="crumb">Workspace <span>/</span> ${view === 'chats' ? 'Agent chats' : view === 'usage' ? 'Connect &amp; usage' : 'Operations'}</div>
+          <div class="top-actions"><span class="status ${connection === 'connected' ? 'online' : 'offline'}"><i></i>${connection === 'connected' ? 'Connected' : 'Connecting'}</span><span class="avatar" title="Owner view">YOU</span></div>
         </header>
         <div class="content">
           ${error ? `<div class="alert" role="alert">${escapeHTML(error)} <span>Backend: ${escapeHTML(API)}</span></div>` : ''}
@@ -308,8 +333,8 @@ function render() {
   document.querySelector('#task-form')?.addEventListener('submit', create);
   document.querySelector('#ask-form')?.addEventListener('submit', askClaude);
   document.querySelector('#context-form')?.addEventListener('submit', saveContext);
-  document.querySelectorAll('#project-goal, #project-notes').forEach((field) => field.addEventListener('input', () => { contextDraftDirty = true; }));
-  document.querySelector('#chat-task-picker')?.addEventListener('change', (event) => { chatTargetTask = event.target.value; });
+  document.querySelectorAll('#project-goal, #project-notes').forEach((field) => field.addEventListener('input', () => { contextDraftDirty = true; contextNote = ''; }));
+  document.querySelector('#chat-task-picker')?.addEventListener('change', (event) => { chatTargetTask = event.target.value; chatTask = chatTargetTask; resetChatScroll = true; render(); });
   document.querySelectorAll('[data-select]').forEach((button) => button.addEventListener('click', () => { selectedTask = button.dataset.select; render(); }));
   document.querySelectorAll('[data-run]').forEach((button) => button.addEventListener('click', () => run(button.dataset.run)));
   document.querySelectorAll('[data-run-claude]').forEach((button) => button.addEventListener('click', () => runClaude(button.dataset.runClaude)));
@@ -406,8 +431,9 @@ async function saveContext(event) {
       mission: document.querySelector('#project-goal').value.trim(), notes: document.querySelector('#project-notes').value.trim(),
     }) });
     contextDraftDirty = false;
+    contextNote = 'Saved for future Claude runs.';
     error = '';
-  } catch (cause) { error = cause.message; }
+  } catch (cause) { error = cause.message; contextNote = ''; }
   finally { busy = false; render(); }
 }
 
@@ -474,5 +500,8 @@ render();
 refresh();
 refreshUsage();
 refreshContext();
-setInterval(refresh, 1500);
-setInterval(refreshUsage, 10000);
+setInterval(() => { if (!document.hidden) refresh(); }, 1500);
+setInterval(() => { if (!document.hidden) refreshUsage(); }, 30000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { refresh(); refreshUsage(); }
+});

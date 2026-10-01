@@ -1,6 +1,6 @@
 # Agent work protocol
 
-This is the contract for the research organization. The dashboard still has a deterministic demo, plus an owner-operated Claude research-worker pilot. A role skill alone does not start an agent or spend tokens. Only a task explicitly queued with **Run Claude** can be claimed by the paired local worker.
+This is the contract for the research organization. The dashboard still has a deterministic demo, plus an owner-operated Claude research-worker pilot. A role skill alone does not start an agent or spend tokens. Only a task explicitly queued with **Run Claude** or an owner question sent in **Agent chats** can be claimed by the paired local worker.
 
 ## Visible conversation
 
