@@ -256,8 +256,10 @@ function renderApprovals() {
     <div class="chat-explainer">QA runs in a fresh Claude invocation with the task, latest draft, and its source links; it does not see the research chat history. This is a separate pass on the <em>same Claude account</em>, not a different provider. It can miss errors, so your approval remains required. This workspace does not yet have user login—do not enter private material.</div>
     <section class="approval-list" aria-label="Research approval queue">
       ${reviewable.length ? reviewable.map((task) => {
-        const draft = data.reviewPackets?.[task.id]?.draft;
-        const review = data.reviewPackets?.[task.id]?.review;
+        const recent = data.messages.filter((message) => message.task_id === task.id && !message.demo);
+        const draft = data.reviewPackets?.[task.id]?.draft || recent.find((message) => message.kind === 'finding');
+        const latestReview = data.reviewPackets?.[task.id]?.review || recent.find((message) => message.kind === 'review');
+        const review = latestReview && draft && Number(latestReview.id) > Number(draft.id) ? latestReview : null;
         const verdict = task.status === 'review_accepted' ? 'QA accepted · your decision needed'
           : task.status === 'approved' ? 'Owner approved'
             : task.status === 'review_revision' ? 'Revision requested'
