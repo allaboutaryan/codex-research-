@@ -6,6 +6,7 @@ import { claimClaudeTask, completeClaudeTask, failClaudeTask, heartbeatClaudeWor
 import { buildChatContext, claimClaudeChat, completeClaudeChat, defaultMission, failClaudeChat, queueClaudeChat, queueTeamWorkflow, readProjectContext, saveProjectContext } from './claude-chat.js';
 import { claimClaudeReview, completeClaudeReview, decideReview, failClaudeReview, queueClaudeReview } from './claude-review.js';
 import { deriveAlerts, readDailyReports, reportTick } from './reports.js';
+import { authEnabled, finishGitHubLogin, logoutOwner, ownerRequestAllowed, readOwnerSession, startGitHubLogin } from './owner-auth.js';
 
 const port = Number(process.env.PORT ?? 8787);
 const pool = process.env.DATABASE_URL ? new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 4 }) : null;
@@ -308,12 +309,27 @@ const server = http.createServer(async (request, response) => {
     triggerReports();
     return send(response, 200, { ok: true, database: pool ? 'postgres' : 'memory', mode: 'demo' });
   }
+  if (request.method === 'GET' && url.pathname === '/auth/status') return send(response, 200,
+    { enabled: authEnabled(), authenticated: readOwnerSession(request), provider: 'github' });
+  if (request.method === 'GET' && url.pathname === '/auth/github/start') {
+    if (startGitHubLogin(response)) return;
+    return send(response, 503, { error: 'GitHub sign-in is not configured yet' });
+  }
+  if (request.method === 'GET' && url.pathname === '/auth/github/callback') {
+    await finishGitHubLogin(request, response, url);
+    return;
+  }
+  if (request.method === 'POST' && url.pathname === '/auth/logout') {
+    logoutOwner(response);
+    return;
+  }
   try {
     const workerCall = url.pathname.startsWith('/api/worker/claude/') && url.pathname !== '/api/worker/claude/pair';
     const workspace = workerCall
       ? await workspaceForWorkerKey(pool, memory, request.headers['x-worker-key'])
-      : keyFrom(request);
-    if (!workspace) return send(response, 401, { error: workerCall ? 'A valid worker key is required' : 'A workspace key is required' });
+      : authEnabled() ? readOwnerSession(request) ? process.env.NORTHSTAR_OWNER_WORKSPACE_ID : null : keyFrom(request);
+    if (!workspace) return send(response, 401, { error: workerCall ? 'A valid worker key is required' : authEnabled() ? 'GitHub owner sign-in is required' : 'A workspace key is required' });
+    if (!workerCall && authEnabled() && !ownerRequestAllowed(request)) return send(response, 403, { error: 'This request must come from the owner dashboard' });
     if (request.method === 'GET' && url.pathname === '/api/state') {
       const state = await readState(workspace);
       return send(response, 200, { ...state, mode: state.chatJobs.length || state.tasks.some((task) => task.status.startsWith('claude_') || task.status.startsWith('review_') || ['research_blocked', 'awaiting_review', 'approved'].includes(task.status)) ? 'claude_pilot' : 'demo', database: pool ? 'postgres' : 'memory', maxTasks: 20 });

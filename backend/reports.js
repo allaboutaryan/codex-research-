@@ -1,6 +1,7 @@
 const timeZone = 'Asia/Kolkata';
 const dashboard = 'https://northstar-lab-woad.vercel.app/';
 const blocked = new Map([
+  ['team_failed', ['Team handoff failed', 'Retry the PM/lead handoff after checking the local Claude worker.']],
   ['research_blocked', ['Research has no cited source', 'Research worker stopped before a source-backed draft was ready.']],
   ['claude_failed', ['Research worker failed', 'Restart the local worker or retry this research task.']],
   ['review_failed', ['Quality review failed', 'Restart the local worker or retry QA.']],
@@ -29,7 +30,7 @@ export function deriveAlerts(tasks, workerSeenAt, reviewPackets = {}, now = new 
     if (task.status === 'awaiting_review' && !reviewPackets[task.id]?.draft?.evidence_refs?.length) {
       title = 'Research draft has no cited source'; detail = 'This older draft cannot pass QA. Retry research with web access.';
     }
-    if (!title && ['claude_queued', 'review_queued'].includes(task.status) && !workerOnline &&
+    if (!title && ['planning_queued', 'lead_queued', 'claude_queued', 'review_queued'].includes(task.status) && !workerOnline &&
       now.getTime() - new Date(task.updated_at).getTime() >= 10 * 60_000) {
       title = 'Local Claude worker is offline'; detail = 'Queued work has waited at least 10 minutes. Start the worker on your computer.';
     }
@@ -69,7 +70,7 @@ export function summarizeDay(date, { tasks, messages, usage }) {
     agent.calls += 1; agent.inputTokens += Number(entry.input_tokens); agent.outputTokens += Number(entry.output_tokens);
   }
   for (const entry of messages) (agents[entry.agent_id] ||= { calls: 0, inputTokens: 0, outputTokens: 0, messages: 0 }).messages += 1;
-  const needAttention = tasks.filter((task) => ['research_blocked', 'claude_failed', 'review_failed', 'review_blocked', 'review_revision', 'review_accepted'].includes(task.status));
+  const needAttention = tasks.filter((task) => ['team_failed', 'research_blocked', 'claude_failed', 'review_failed', 'review_blocked', 'review_revision', 'review_accepted'].includes(task.status));
   return { date, timeZone, generated_at: new Date().toISOString(), taskCount: tasks.length, status, agents,
     activityCount: messages.length, modelCalls: usage.length,
     inputTokens: usage.reduce((sum, item) => sum + Number(item.input_tokens), 0),

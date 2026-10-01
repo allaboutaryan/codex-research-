@@ -42,7 +42,7 @@ flowchart TD
 7. **Close or continue.** The project manager closes only accepted work. A promising gap becomes a candidate for further validation, not an automatic product decision. The CTO chooses the next bounded investigation or asks the owner to decide.
 8. **Report daily.** Each active agent reports completed, in-progress, and blocked work; evidence and decisions; actual token/cost usage; and next actions. The CTO combines these into a short owner-facing summary at the owner's configured time and timezone. No activity is reported as no activity, never invented progress.
 
-The [Agent chats view](https://northstar-lab-woad.vercel.app/#chats) has task threads and direct-message views, backed by task-linked, append-only messages. The owner can address any of the five agents individually; direct answers do not change a formal verdict. **Run full team** on a queued task starts PM planning, lead assignment, research, automatic QA when sources exist, owner approval, PM closeout, and a CTO summary. Every role is a separate measured Claude call with a visible handoff. A source-free run becomes `research_blocked` and appears in [Alerts & reports](https://northstar-lab-woad.vercel.app/#reports), not the QA queue. QA publishes `ACCEPT`, `REVISE`, or `BLOCK` with checked links; `ACCEPT` goes to the [Approval inbox](https://northstar-lab-woad.vercel.app/#approvals), where an explicit browser-workspace decision approves it or requests revision. The local worker key cannot make that decision. This is not yet a true owner login: protect the browser workspace key and do not use the pilot for private material. Scripted demo handoffs remain labeled. Hidden reasoning, credentials, and raw tool output are not published. The CTO task summary is real after an approved full-team task; an agent-written daily roll-up remains future work.
+The [Agent chats view](https://northstar-lab-woad.vercel.app/#chats) has task threads and direct-message views, backed by task-linked, append-only messages. The owner can address any of the five agents individually; direct answers do not change a formal verdict. **Run full team** on a queued task starts PM planning, lead assignment, research, automatic QA when sources exist, owner approval, PM closeout, and a CTO summary. Every role is a separate measured Claude call with a visible handoff. A source-free run becomes `research_blocked` and appears in [Alerts & reports](https://northstar-lab-woad.vercel.app/#reports), not the QA queue. QA publishes `ACCEPT`, `REVISE`, or `BLOCK` with checked links; `ACCEPT` goes to the [Approval inbox](https://northstar-lab-woad.vercel.app/#approvals), where an explicit browser-workspace decision approves it or requests revision. Revisions currently require a manual retry; they do not loop automatically through the lead. The local worker key cannot make the owner decision. Until GitHub login is enabled, protect the browser workspace key and do not use the pilot for private material. Scripted demo handoffs remain labeled. Hidden reasoning, credentials, and raw tool output are not published. The CTO task summary is real after an approved full-team task; an agent-written daily roll-up remains future work.
 
 ## Research artifacts and product decisions
 
@@ -127,7 +127,17 @@ To send those alerts and the daily report to one private Telegram chat:
 
 The backend sends through Telegram's official [`sendMessage`](https://core.telegram.org/bots/api#sendmessage) endpoint. Repeated checks use a persisted delivery key to avoid ordinary duplicates and retry a failed attempt after five minutes. It is best-effort, not exactly-once delivery. Only the configured workspace is eligible; the phone number previously provided is not used or stored. No paid Render cron service has been created.
 
-The owner wants subscription OAuth, **not API-key billing**. [OpenAI documents ChatGPT-plan usage for open-source/local apps](https://developers.openai.com/siwc/token-sharing-open-source), including a Codex app-server path; a paid or remotely hosted app must request access first. We do **not** proxy either account's subscription tokens through the public Render app. No OAuth credentials appear in the browser, GitHub, or agent messages. Do not use chat-share links or rotate subscription accounts to evade limits.
+The owner wants subscription OAuth, **not API-key billing**. GitHub sign-in below authenticates the *owner of this dashboard*; it is not a Claude or Codex subscription bridge. [OpenAI documents ChatGPT-plan usage for open-source/local apps](https://developers.openai.com/siwc/token-sharing-open-source), including a Codex app-server path; a paid or remotely hosted app must request access first. We do **not** proxy either account's subscription tokens through the public Render app. No Claude/Codex OAuth credentials appear in the browser, GitHub, or agent messages. Do not use chat-share links or rotate subscription accounts to evade limits.
+
+## Owner sign-in
+
+The backend includes a GitHub OAuth sign-in gate restricted to the numeric GitHub ID of `allaboutaryan` (not merely the typed username). It requests no repository scope. The GitHub token is used only on the backend to check identity; a signed, HttpOnly, Secure, 12-hour cookie is issued for the Vercel site. Vercel rewrites `/api/*` and `/auth/*` to Render, keeping the cookie same-origin in the browser. Until the OAuth app and private Render settings below are installed, **the old random browser workspace key remains active**; do not store private work in that mode.
+
+1. Register a GitHub OAuth App owned by `allaboutaryan`, with homepage `https://northstar-lab-woad.vercel.app/` and callback `https://northstar-lab-woad.vercel.app/auth/github/callback`.
+2. Add `NORTHSTAR_GITHUB_CLIENT_ID`, `NORTHSTAR_GITHUB_CLIENT_SECRET`, `NORTHSTAR_SESSION_SECRET` (a random 32+-character value), and `NORTHSTAR_OWNER_WORKSPACE_ID` (the current dashboard workspace ID) as **private Render backend environment variables**. Never add them to Vercel's frontend variables or this repo. Deploy Render once after all four are set.
+3. Open the dashboard, choose **Continue with GitHub**, and verify that `allaboutaryan` can sign in and other GitHub accounts cannot. Once enabled, the backend rejects the old browser workspace key for owner routes. The separate local Claude worker key continues to work.
+
+The current free PostgreSQL database has a time limit and no automatic backup. Owner sign-in does not make the data durable or the local Claude worker always-on.
 
 ## Run locally
 
@@ -147,13 +157,13 @@ npm install
 npm run dev
 ```
 
-The frontend defaults to `http://localhost:8787`. Set `VITE_API_URL` for a different backend. Set `DATABASE_URL` on the backend for durable storage. The browser creates a random workspace key and stores it locally; use this release for demonstration data only.
+The local frontend defaults to `http://localhost:8787`; set `VITE_API_URL` for a different local backend. Production calls use the same-origin Vercel rewrites in `frontend/vercel.json`. Set `DATABASE_URL` on the backend for PostgreSQL storage. Without the GitHub OAuth settings, the browser creates a random workspace key and stores it locally; use that mode for demonstration data only.
 
 Run the backend usage tests with `npm test` from `backend/`.
 
 ## Deployment
 
-- Frontend: Vercel, root directory `frontend`, build command `npm run build`, output directory `dist`, `VITE_API_URL` set to the Render API URL.
+- Frontend: Vercel, root directory `frontend`, build command `npm run build`, output directory `dist`; `vercel.json` rewrites `/api` and `/auth` to Render. `VITE_API_URL` is used only for local development.
 - Backend: Render Node web service, root directory `backend`, build command `npm install`, start command `npm start`. Set `DATABASE_URL` to use PostgreSQL.
 - Health endpoint: `GET` and `HEAD` on `https://northstar-lab-api.onrender.com/health` return HTTP 200 when the API is healthy. UptimeRobot checks this endpoint every five minutes.
 

@@ -4,7 +4,7 @@ import './usage.css';
 import './ux.css';
 import './reports.css';
 
-const API = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
+const API = import.meta.env.PROD ? '' : (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
 const REPO = 'https://github.com/allaboutaryan/codex-research-';
 const keyName = 'northstar-lab-demo-workspace';
 let workspaceKey = localStorage.getItem(keyName);
@@ -26,6 +26,9 @@ let data = { tasks: [], events: [], messages: [], modelCalls: 0, inputTokens: 0,
 let usageData = null;
 let reportData = null;
 let contextData = null;
+let authStatus = null;
+const authReady = fetch(`${API}/auth/status`).then((response) => response.json()).then((value) => { authStatus = value; })
+  .catch(() => { authStatus = { enabled: false, authenticated: false }; });
 let contextNote = '';
 let usageError = '';
 let pairingNote = '';
@@ -58,6 +61,7 @@ async function request(path, options = {}) {
     headers: { 'content-type': 'application/json', 'x-workspace-key': workspaceKey, ...(options.headers || {}) },
   });
   const payload = await response.json().catch(() => ({}));
+  if (response.status === 401 && authStatus?.enabled) authStatus.authenticated = false;
   if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
   return payload;
 }
@@ -93,15 +97,15 @@ function renderTaskRows() {
 }
 
 function renderOverview() {
-  const running = data.tasks.filter((task) => task.status === 'running' || task.status === 'claude_running');
+  const running = data.tasks.filter((task) => ['running', 'planning_queued', 'lead_queued', 'claude_running', 'review_running'].includes(task.status));
   const complete = data.tasks.filter((task) => task.status === 'complete');
-  const queued = data.tasks.filter((task) => task.status === 'queued' || task.status === 'claude_queued');
+  const queued = data.tasks.filter((task) => ['queued', 'planning_queued', 'lead_queued', 'claude_queued', 'review_queued'].includes(task.status));
   const awaitingQA = data.tasks.filter((task) => ['awaiting_review', 'review_queued', 'review_running', 'review_failed'].includes(task.status));
   const approvalCount = data.tasks.filter((task) => task.status === 'review_accepted').length;
   const active = running[0];
   if (!selectedTask || !data.tasks.some((task) => task.id === selectedTask)) selectedTask = active?.id || data.tasks[0]?.id || null;
   const focusEvents = data.events.filter((event) => !selectedTask || event.task_id === selectedTask);
-  const currentRole = active ? active.status === 'claude_running' ? 'Research worker' : activeRole(active.step) : '';
+  const currentRole = active ? ({ planning_queued: 'Project manager', lead_queued: 'Team lead', claude_running: 'Research worker', review_running: 'Quality reviewer' })[active.status] || activeRole(active.step) : '';
   const claudeStatus = usageData?.connections?.find((item) => item.provider === 'anthropic')?.status;
   const next = !claudeStatus || claudeStatus === 'not_connected'
     ? { title: 'Connect your Claude worker', detail: 'Pair Claude Code once, then run the worker on your computer.', href: '#usage', action: 'Open worker setup' }
@@ -115,8 +119,8 @@ function renderOverview() {
             ? { title: 'Research needs attention', detail: 'A run stopped without sources. Check its blocker, clarify the question, then retry.', href: '#approvals', action: 'See blocked research' }
           : data.tasks.some((task) => task.status === 'awaiting_review' || task.status === 'review_failed')
             ? { title: 'Run the QA pass', detail: 'A research draft is ready for a separate Claude source-checking pass.', href: '#approvals', action: 'Open review queue' }
-        : data.tasks.some((task) => ['queued', 'claude_failed', 'research_blocked', 'review_revision', 'review_blocked'].includes(task.status))
-          ? { title: 'Queue a task for Claude', detail: 'A task is ready. Select Queue for Claude to start real research.', href: '#tasks', action: 'Open task queue' }
+        : data.tasks.some((task) => ['queued', 'team_failed', 'claude_failed', 'research_blocked', 'review_revision', 'review_blocked'].includes(task.status))
+          ? { title: 'Start the next research task', detail: 'Choose the full five-role workflow or the lower-token research-only shortcut.', href: '#tasks', action: 'Open task queue' }
           : { title: 'Ask about the work', detail: 'Read task handoffs and ask the Research worker a question.', href: '#chats', action: 'Open agent chats' };
 
   return `
@@ -158,7 +162,7 @@ function renderOverview() {
         ${roles.map((role, index) => `<div class="flow-card ${currentRole === role.label ? 'is-active' : ''}">
           <div class="flow-top"><span class="step">0${index + 1}</span><span class="role-icon">${role.short}</span></div>
           <h3>${role.label}</h3><p>${role.detail}</p>
-          <div class="role-status"><span></span>${currentRole === role.label ? active.status === 'claude_running' ? 'Working now' : 'Demo step' : role.label === 'Research worker' ? claudeStatus === 'online' ? 'Local Claude online' : 'Local Claude offline' : 'Planned role'}</div>
+          <div class="role-status"><span></span>${currentRole === role.label ? active.status === 'running' ? 'Demo step' : 'Team stage' : claudeStatus === 'online' ? 'Local Claude ready' : 'Local Claude offline'}</div>
         </div>`).join('')}
       </div>
       <div class="flow-foot">Full-team tasks use separate local Claude calls for PM, lead, research, QA, and CTO. QA is not cross-provider; the owner approval gate remains. <a href="#approvals">Open approvals →</a></div>
@@ -211,7 +215,7 @@ function renderChats() {
       <div><div class="eyebrow">SHARED WORKROOM / DIRECT MESSAGES</div><h1>Agent chats</h1><p>Message a worker directly, or follow the shared conversation on each task.</p></div>
       <span class="demo-tag">${data.mode === 'claude_pilot' ? 'MIXED FEED · REAL MESSAGES LABELED' : 'SCRIPTED DEMO · 0 MODEL CALLS'}</span>
     </section>
-    <div class="chat-explainer">All five roles can answer you individually through separate local Claude calls. Direct replies are not formal QA decisions. Task threads show real handoffs and labeled demos. Claude uses bounded context, not the entire chat history. This pilot has no account login yet: do not enter credentials or private research. <a href="${REPO}/blob/main/agents/PROTOCOL.md" target="_blank" rel="noopener noreferrer">Agent message protocol ↗</a></div>
+    <div class="chat-explainer">All five roles can answer you individually through separate local Claude calls. Direct replies are not formal QA decisions. Task threads show real handoffs and labeled demos. Claude uses bounded context, not the entire chat history. ${authStatus?.enabled ? 'Owner access is restricted to your GitHub sign-in.' : 'This pilot has no account login yet: do not enter credentials or private research.'} <a href="${REPO}/blob/main/agents/PROTOCOL.md" target="_blank" rel="noopener noreferrer">Agent message protocol ↗</a></div>
     <details class="panel context-panel" ${document.querySelector('.context-panel')?.open ? 'open' : ''}>
       <summary>Project goal and memory <span>View or edit the context Claude receives ↗</span></summary>
       <form id="context-form" class="context-form">
@@ -261,7 +265,7 @@ function renderApprovals() {
       <div><div class="eyebrow">QUALITY GATE / OWNER DECISIONS</div><h1>Approval inbox</h1><p>Check the draft and the separate reviewer verdict before approving any research.</p></div>
       <span class="demo-tag">${needsOwner} NEED YOUR DECISION</span>
     </section>
-    <div class="chat-explainer">QA runs in a fresh Claude invocation with the task, latest draft, and its source links; it does not see the research chat history. This is a separate pass on the <em>same Claude account</em>, not a different provider. It can miss errors, so your approval remains required. This workspace does not yet have user login—do not enter private material.</div>
+    <div class="chat-explainer">QA runs in a fresh Claude invocation with the task, latest draft, and its source links; it does not see the research chat history. This is a separate pass on the <em>same Claude account</em>, not a different provider. It can miss errors, so your approval remains required. ${authStatus?.enabled ? 'GitHub owner sign-in is active.' : 'This workspace does not yet have user login—do not enter private material.'}</div>
     <section class="approval-list" aria-label="Research approval queue">
       ${reviewable.length ? reviewable.map((task) => {
         const recent = data.messages.filter((message) => message.task_id === task.id && !message.demo);
@@ -381,10 +385,15 @@ function renderReports() {
 }
 
 function signature() {
-  return JSON.stringify([data.tasks, data.events, data.messages, data.reviewPackets, data.chatJobs, data.database, data.mode, usageData, reportData, contextData, contextNote, usageError, pairingNote, connection, error, selectedTask, chatTask, chatAgent, chatLane, dmAgent, chatTargetAgent, chatTargetTask, currentView(), busy]);
+  return JSON.stringify([authStatus, data.tasks, data.events, data.messages, data.reviewPackets, data.chatJobs, data.database, data.mode, usageData, reportData, contextData, contextNote, usageError, pairingNote, connection, error, selectedTask, chatTask, chatAgent, chatLane, dmAgent, chatTargetAgent, chatTargetTask, currentView(), busy]);
 }
 
 function render() {
+  if (authStatus?.enabled && !authStatus.authenticated) {
+    document.querySelector('#app').innerHTML = `<main class="login-screen"><section class="login-card"><div class="brand-mark">✳</div><div class="eyebrow">NORTHSTAR LAB / OWNER ACCESS</div><h1>Sign in to your research workspace</h1><p>Only the GitHub account <strong>allaboutaryan</strong> can open tasks, agent chats, approvals, and reports.</p>${location.hash === '#not-owner' ? '<div class="alert">This GitHub account is not the approved owner.</div>' : location.hash === '#login-error' ? '<div class="alert">Sign-in did not complete. Please try again.</div>' : ''}<a class="login-button" href="/auth/github/start">Continue with GitHub →</a><small>Northstar uses your GitHub identity only; it does not request repository access.</small></section></main>`;
+    lastRenderedSignature = signature();
+    return;
+  }
   const editableIds = ['title', 'brief', 'owner-question', 'project-goal', 'project-notes', ...data.tasks.map((task) => `decision-note-${task.id}`)];
   const draft = Object.fromEntries(editableIds.map((id) => [id, document.getElementById(id)?.value]));
   const focused = editableIds.includes(document.activeElement?.id) ? document.activeElement.id : null;
@@ -416,7 +425,7 @@ function render() {
       <main id="${view}" class="main">
         <header class="topbar">
           <div class="crumb">Workspace <span>/</span> ${view === 'chats' ? 'Agent chats' : view === 'approvals' ? 'Approvals' : view === 'reports' ? 'Alerts &amp; reports' : view === 'usage' ? 'Connect &amp; usage' : 'Operations'}</div>
-          <div class="top-actions"><span class="status ${connection === 'connected' ? 'online' : 'offline'}"><i></i>${connection === 'connected' ? 'Connected' : 'Connecting'}</span><span class="avatar" title="Owner view">YOU</span></div>
+          <div class="top-actions"><span class="status ${connection === 'connected' ? 'online' : 'offline'}"><i></i>${connection === 'connected' ? 'Connected' : 'Connecting'}</span><span class="avatar" title="Owner view">YOU</span>${authStatus?.enabled ? '<button type="button" id="owner-logout" class="logout-button">Sign out</button>' : ''}</div>
         </header>
         <div class="content">
           ${error ? `<div class="alert" role="alert">${escapeHTML(error)} <span>Backend: ${escapeHTML(API)}</span></div>` : ''}
@@ -427,6 +436,7 @@ function render() {
     </div>`;
 
   document.querySelector('#task-form')?.addEventListener('submit', create);
+  document.querySelector('#owner-logout')?.addEventListener('click', async () => { await fetch('/auth/logout', { method: 'POST' }); location.reload(); });
   document.querySelector('#ask-form')?.addEventListener('submit', askClaude);
   document.querySelector('#context-form')?.addEventListener('submit', saveContext);
   document.querySelectorAll('#project-goal, #project-notes').forEach((field) => field.addEventListener('input', () => { contextDraftDirty = true; contextNote = ''; }));
@@ -479,6 +489,8 @@ function render() {
 }
 
 async function refresh() {
+  await authReady;
+  if (authStatus?.enabled && !authStatus.authenticated) { render(); return; }
   try {
     const state = await request('/api/state');
     data = { ...state, messages: Array.isArray(state.messages) ? state.messages : [] };
@@ -493,6 +505,8 @@ async function refresh() {
 }
 
 async function refreshUsage() {
+  await authReady;
+  if (authStatus?.enabled && !authStatus.authenticated) return;
   try {
     usageData = await request('/api/usage');
     usageError = '';
@@ -504,6 +518,8 @@ async function refreshUsage() {
 }
 
 async function refreshReports() {
+  await authReady;
+  if (authStatus?.enabled && !authStatus.authenticated) return;
   try { reportData = await request('/api/reports'); }
   catch { reportData = null; }
   if (!busy && signature() !== lastRenderedSignature) render();
@@ -531,6 +547,8 @@ async function create(event) {
 }
 
 async function refreshContext() {
+  await authReady;
+  if (authStatus?.enabled && !authStatus.authenticated) return;
   try { contextData = await request('/api/context'); }
   catch (cause) { error = `Could not load project memory: ${cause.message}`; }
   if (!['owner-question', 'project-goal', 'project-notes'].includes(document.activeElement?.id) && signature() !== lastRenderedSignature) render();

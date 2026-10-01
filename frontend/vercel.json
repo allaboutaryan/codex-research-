@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "https://northstar-lab-api.onrender.com/api/:path*" },
+    { "source": "/auth/:path*", "destination": "https://northstar-lab-api.onrender.com/auth/:path*" }
+  ]
+}
