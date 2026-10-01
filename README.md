@@ -46,6 +46,8 @@ The [Agent chats view](https://northstar-lab-woad.vercel.app/#chats) has task th
 
 ## Research artifacts and product decisions
 
+The first bounded desk review is [2024–2026 OSS newcomer onboarding: preliminary evidence and a testable MVP hypothesis](research/2024-2026-oss-onboarding-preliminary.md). It is **not** an agent-team result or a QA-approved build decision; the live two-year task remains pending while the local Claude worker is stopped after a limit error.
+
 Accepted research packets should include a citation index, concise findings, limitations, conflicting evidence, and a proposed test of the identified gap. The GitHub repository will hold versioned, shareable findings and decision records. For papers or images that cannot legally be redistributed, store metadata and links rather than copies. A product idea moves forward only when evidence, user need, feasibility, and QA findings support a small validation experiment.
 
 If a candidate survives that test, the CTO presents an evidence-backed **go / revise / stop** recommendation to the owner. With owner approval, the project manager can turn it into an MVP specification, engineering tasks, code review, deployment, and user-feedback measurements. This product-building phase will need its own engineering and product-validation skills; the five skills in this repository cover the research organization only. Feedback and failed assumptions return to the research backlog instead of being hidden behind a launch.
