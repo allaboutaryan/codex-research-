@@ -35,7 +35,7 @@ export async function workspaceForWorkerKey(pool, memory, key) {
 export async function queueClaudeTask(pool, memory, workspace, id) {
   if (!pool) {
     const state = memory.get(workspace);
-    const task = state?.tasks.find((item) => item.id === id && ['queued', 'claude_failed'].includes(item.status));
+    const task = state?.tasks.find((item) => item.id === id && ['queued', 'claude_failed', 'review_revision', 'review_blocked'].includes(item.status));
     if (!task) return false;
     Object.assign(task, { status: 'claude_queued', claude_attempts: 0, claude_lease_token: null, claude_lease_expires_at: null, updated_at: now() });
     state.events.push({ id: state.nextId++, workspace_id: workspace, task_id: id, role: 'System', message: 'Queued for the owner-operated Claude research worker. Independent QA is still required.', created_at: now() });
@@ -46,7 +46,7 @@ export async function queueClaudeTask(pool, memory, workspace, id) {
     await client.query('BEGIN');
     const result = await client.query(`UPDATE tasks SET status = 'claude_queued', claude_attempts = 0,
       claude_lease_token = NULL, claude_lease_expires_at = NULL, updated_at = now()
-      WHERE id = $1 AND workspace_id = $2 AND status IN ('queued', 'claude_failed') RETURNING id`, [id, workspace]);
+      WHERE id = $1 AND workspace_id = $2 AND status IN ('queued', 'claude_failed', 'review_revision', 'review_blocked') RETURNING id`, [id, workspace]);
     if (!result.rowCount) { await client.query('ROLLBACK'); return false; }
     await client.query('INSERT INTO events (workspace_id, task_id, role, message) VALUES ($1, $2, $3, $4)',
       [workspace, id, 'System', 'Queued for the owner-operated Claude research worker. Independent QA is still required.']);
@@ -125,12 +125,12 @@ export async function completeClaudeTask(pool, memory, workspace, id, body) {
     const task = state?.tasks.find((item) => item.id === id);
     if (!validLease(task, body.lease_token)) return false;
     await recordUsage(null, memory, workspace, usage);
-    task.status = 'awaiting_review'; task.claude_lease_token = null; task.updated_at = now();
+    task.status = 'review_queued'; task.claude_lease_token = null; task.updated_at = now();
     state.messages.push({ id: state.nextMessageId++, workspace_id: workspace, run_id: id, task_id: id,
       agent_id: 'Research worker', recipient_id: 'Quality reviewer', kind: 'finding', summary: body.summary.trim(),
       artifact_refs: [], evidence_refs: body.evidence_refs, demo: false, created_at: now() });
     state.events.push({ id: state.nextId++, workspace_id: workspace, task_id: id, role: 'Research worker',
-      message: 'Claude submitted a research draft; independent QA is pending.', created_at: now() });
+      message: 'Claude submitted a research draft; a separate QA pass is queued.', created_at: now() });
     return true;
   }
   const client = await pool.connect();
@@ -142,9 +142,9 @@ export async function completeClaudeTask(pool, memory, workspace, id, body) {
     await client.query(`INSERT INTO agent_messages (workspace_id, run_id, task_id, agent_id, recipient_id, kind, summary, evidence_refs, demo)
       VALUES ($1, $2, $2, 'Research worker', 'Quality reviewer', 'finding', $3, $4::jsonb, false)`,
     [workspace, id, body.summary.trim(), JSON.stringify(body.evidence_refs)]);
-    await client.query(`UPDATE tasks SET status = 'awaiting_review', claude_lease_token = NULL, claude_lease_expires_at = NULL, updated_at = now() WHERE id = $1`, [id]);
+    await client.query(`UPDATE tasks SET status = 'review_queued', claude_lease_token = NULL, claude_lease_expires_at = NULL, updated_at = now() WHERE id = $1`, [id]);
     await client.query('INSERT INTO events (workspace_id, task_id, role, message) VALUES ($1, $2, $3, $4)',
-      [workspace, id, 'Research worker', 'Claude submitted a research draft; independent QA is pending.']);
+      [workspace, id, 'Research worker', 'Claude submitted a research draft; a separate QA pass is queued.']);
     await client.query('COMMIT');
     return true;
   } catch (error) { await client.query('ROLLBACK'); throw error; }

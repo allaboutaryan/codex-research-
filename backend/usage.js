@@ -3,7 +3,7 @@ export const workerRoutes = Object.freeze([
   { agent: 'Project manager', worker: 'Codex', provider: 'openai', reason: 'Scope, acceptance criteria, and coordination' },
   { agent: 'Team lead', worker: 'Codex', provider: 'openai', reason: 'Task decomposition and handoffs' },
   { agent: 'Research worker', worker: 'Claude', provider: 'anthropic', reason: 'Focused evidence gathering and research packets' },
-  { agent: 'Quality reviewer', worker: 'Codex', provider: 'openai', reason: 'Independent cross-provider review' },
+  { agent: 'Quality reviewer', worker: 'Claude', provider: 'anthropic', reason: 'Separate source-checking pass on the same local subscription' },
 ]);
 
 export const providerConnections = Object.freeze([

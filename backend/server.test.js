@@ -36,7 +36,7 @@ test('browser and local Claude worker have separate permissions', async (context
   }) });
   assert.equal(complete.status, 200);
   const state = await (await browser('/api/state')).json();
-  assert.equal(state.tasks[0].status, 'awaiting_review');
+  assert.equal(state.tasks[0].status, 'review_queued');
   assert.equal(state.messages[0].demo, false);
   assert.equal('claude_lease_token' in state.tasks[0], false);
   const usage = await (await browser('/api/usage')).json();
@@ -63,4 +63,25 @@ test('browser and local Claude worker have separate permissions', async (context
   assert.equal(withChat.chatJobs[0].status, 'complete');
   assert.equal(withChat.messages[0].kind, 'answer');
   assert.equal((await (await browser('/api/usage')).json()).summary.total.totalTokens, 80);
+  assert.equal((await browser('/api/worker/claude/claim-review', { method: 'POST' })).status, 401);
+  assert.equal((await worker(`/api/tasks/${task.id}/decision`, { method: 'POST', body: JSON.stringify({ decision: 'approve' }) })).status, 401);
+  const reviewClaim = await (await worker('/api/worker/claude/claim-review', { method: 'POST' })).json();
+  assert.equal(reviewClaim.task.id, task.id);
+  assert.match(reviewClaim.task.draft, /Official source checked/);
+  assert.equal('context' in reviewClaim.task, false);
+  const reviewed = await worker(`/api/worker/claude/review/${task.id}/complete`, { method: 'POST', body: JSON.stringify({
+    lease_token: reviewClaim.task.lease_token,
+    summary: 'VERDICT: ACCEPT\nChecked sources: https://example.org/source\nSupported claims: bounded finding only.\nLimitations: no broad novelty claim.',
+    model: 'claude-test', request_id: '44444444-4444-4444-8444-444444444444', evidence_refs: ['https://example.org/source'],
+    usage: { input_tokens: 40, output_tokens: 20, cached_input_tokens: 0, cache_write_tokens: 0, reasoning_output_tokens: 0 },
+  }) });
+  assert.equal(reviewed.status, 200);
+  assert.equal((await (await browser('/api/state')).json()).tasks[0].status, 'review_accepted');
+  assert.equal((await browser(`/api/tasks/${task.id}/decision`, { method: 'POST', body: JSON.stringify({ decision: 'approve', note: 'Approved after reading the review.' }) })).status, 200);
+  const approved = await (await browser('/api/state')).json();
+  assert.equal(approved.tasks[0].status, 'approved');
+  assert.match(approved.reviewPackets[task.id].draft.summary, /Official source checked/);
+  assert.match(approved.reviewPackets[task.id].review.summary, /VERDICT: ACCEPT/);
+  assert.equal(approved.messages[0].agent_id, 'Owner');
+  assert.equal((await (await browser('/api/usage')).json()).summary.total.totalTokens, 140);
 });

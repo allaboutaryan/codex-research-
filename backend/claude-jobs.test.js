@@ -26,7 +26,7 @@ test('Claude task moves from queued to independent QA with measured usage', asyn
     model: 'claude-sonnet-test', request_id: '22222222-2222-4222-8222-222222222222', evidence_refs: ['https://example.org/paper'],
     usage: { input_tokens: 100, output_tokens: 40, cached_input_tokens: 20, cache_write_tokens: 10, reasoning_output_tokens: 5 } };
   assert.equal(await completeClaudeTask(null, memory, 'owner', taskId, result), true);
-  assert.equal(memory.get('owner').tasks[0].status, 'awaiting_review');
+  assert.equal(memory.get('owner').tasks[0].status, 'review_queued');
   assert.equal(memory.get('owner').messages[0].demo, false);
   assert.equal((await readUsage(null, memory, 'owner')).summary.total.totalTokens, 140);
   assert.equal(await completeClaudeTask(null, memory, 'owner', taskId, result), false);

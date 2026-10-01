@@ -28,9 +28,10 @@ export async function saveProjectContext(pool, memory, workspace, body) {
   return { mission, notes };
 }
 
-export async function queueClaudeChat(pool, memory, workspace, taskId, question) {
+export async function queueClaudeChat(pool, memory, workspace, taskId, question, agentId = 'Research worker') {
   const text = typeof question === 'string' ? question.trim() : '';
   if (text.length < 3 || text.length > 2000) throw new Error('Question must be 3–2000 characters');
+  if (!['Research worker', 'Quality reviewer'].includes(agentId)) throw new Error('Invalid chat recipient');
   const id = randomUUID();
   if (!pool) {
     const state = memory.get(workspace);
@@ -38,9 +39,9 @@ export async function queueClaudeChat(pool, memory, workspace, taskId, question)
     const pending = state.chatJobs.filter((job) => job.status === 'queued' || job.status === 'running').length;
     if (pending >= 5) throw new Error('At most five Claude questions can be pending');
     state.messages.push({ id: state.nextMessageId++, workspace_id: workspace, run_id: id, task_id: taskId,
-      agent_id: 'Owner', recipient_id: 'Research worker', kind: 'question', summary: text,
+      agent_id: 'Owner', recipient_id: agentId, kind: 'question', summary: text,
       artifact_refs: [], evidence_refs: [], demo: false, created_at: stamp() });
-    state.chatJobs.push({ id, task_id: taskId, question: text, status: 'queued', attempts: 0, created_at: stamp() });
+    state.chatJobs.push({ id, task_id: taskId, question: text, agent_id: agentId, status: 'queued', attempts: 0, created_at: stamp() });
     return id;
   }
   const client = await pool.connect();
@@ -52,8 +53,8 @@ export async function queueClaudeChat(pool, memory, workspace, taskId, question)
     const pending = await client.query("SELECT count(*)::integer AS count FROM claude_chat_jobs WHERE workspace_id = $1 AND status IN ('queued', 'running')", [workspace]);
     if (pending.rows[0].count >= 5) throw new Error('At most five Claude questions can be pending');
     await client.query(`INSERT INTO agent_messages (workspace_id, run_id, task_id, agent_id, recipient_id, kind, summary, demo)
-      VALUES ($1, $2, $3, 'Owner', 'Research worker', 'question', $4, false)`, [workspace, id, taskId, text]);
-    await client.query('INSERT INTO claude_chat_jobs (id, workspace_id, task_id, question) VALUES ($1, $2, $3, $4)', [id, workspace, taskId, text]);
+      VALUES ($1, $2, $3, 'Owner', $4, 'question', $5, false)`, [workspace, id, taskId, agentId, text]);
+    await client.query('INSERT INTO claude_chat_jobs (id, workspace_id, task_id, question, agent_id) VALUES ($1, $2, $3, $4, $5)', [id, workspace, taskId, text, agentId]);
     await client.query('COMMIT');
     return id;
   } catch (error) { await client.query('ROLLBACK'); throw error; }
@@ -118,14 +119,14 @@ export async function claimClaudeChat(pool, memory, workspace) {
       ) UPDATE claude_chat_jobs SET status = 'running', lease_token = $3,
         lease_expires_at = now() + interval '8 minutes', attempts = attempts + 1
         FROM candidate WHERE claude_chat_jobs.id = candidate.id
-        RETURNING claude_chat_jobs.id, claude_chat_jobs.task_id, claude_chat_jobs.question`, [workspace, maxAttempts, token]);
+        RETURNING claude_chat_jobs.id, claude_chat_jobs.task_id, claude_chat_jobs.question, claude_chat_jobs.agent_id`, [workspace, maxAttempts, token]);
       job = result.rows[0];
       await client.query('COMMIT');
     } catch (error) { await client.query('ROLLBACK'); throw error; }
     finally { client.release(); }
     if (!job) return null;
   }
-  return { id: job.id, task_id: job.task_id, question: job.question, lease_token: token,
+  return { id: job.id, task_id: job.task_id, question: job.question, agent_id: job.agent_id || 'Research worker', lease_token: token,
     context: await buildChatContext(pool, memory, workspace, job.task_id, job.id) };
 }
 
@@ -135,30 +136,32 @@ function validLease(job, token) {
 
 export async function completeClaudeChat(pool, memory, workspace, id, body) {
   validateClaudeResult(body);
-  const usage = { ...body.usage, task_id: null, agent_id: 'Research worker', provider: 'anthropic', model: body.model, request_id: body.request_id };
+  const usage = { ...body.usage, task_id: null, agent_id: null, provider: 'anthropic', model: body.model, request_id: body.request_id };
   if (!pool) {
     const state = memory.get(workspace);
     const job = state.chatJobs.find((item) => item.id === id);
     if (!validLease(job, body.lease_token)) return false;
     usage.task_id = job.task_id;
+    usage.agent_id = job.agent_id || 'Research worker';
     await recordUsage(null, memory, workspace, usage);
     job.status = 'complete'; job.lease_token = null;
     state.messages.push({ id: state.nextMessageId++, workspace_id: workspace, run_id: id, task_id: job.task_id,
-      agent_id: 'Research worker', recipient_id: 'Owner', kind: 'answer', summary: body.summary.trim(),
+      agent_id: usage.agent_id, recipient_id: 'Owner', kind: 'answer', summary: body.summary.trim(),
       artifact_refs: [], evidence_refs: body.evidence_refs, demo: false, created_at: stamp() });
     return true;
   }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const result = await client.query('SELECT task_id, status, lease_token, lease_expires_at FROM claude_chat_jobs WHERE id = $1 AND workspace_id = $2 FOR UPDATE', [id, workspace]);
+    const result = await client.query('SELECT task_id, agent_id, status, lease_token, lease_expires_at FROM claude_chat_jobs WHERE id = $1 AND workspace_id = $2 FOR UPDATE', [id, workspace]);
     const job = result.rows[0];
     if (!validLease(job, body.lease_token)) { await client.query('ROLLBACK'); return false; }
     usage.task_id = job.task_id;
+    usage.agent_id = job.agent_id || 'Research worker';
     await recordUsage(client, memory, workspace, usage);
     await client.query(`INSERT INTO agent_messages (workspace_id, run_id, task_id, agent_id, recipient_id, kind, summary, evidence_refs, demo)
-      VALUES ($1, $2, $3, 'Research worker', 'Owner', 'answer', $4, $5::jsonb, false)`,
-    [workspace, id, job.task_id, body.summary.trim(), JSON.stringify(body.evidence_refs)]);
+      VALUES ($1, $2, $3, $4, 'Owner', 'answer', $5, $6::jsonb, false)`,
+    [workspace, id, job.task_id, usage.agent_id, body.summary.trim(), JSON.stringify(body.evidence_refs)]);
     await client.query("UPDATE claude_chat_jobs SET status = 'complete', lease_token = NULL, lease_expires_at = NULL WHERE id = $1", [id]);
     await client.query('COMMIT');
     return true;

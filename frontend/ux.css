@@ -51,7 +51,7 @@ button, a, input, textarea, select, summary { transition: border-color .15s, bac
 .workflow-details .flow-card { min-height: 170px; }
 .workflow-details .flow-foot { line-height: 1.5; }
 
-.ask-form { display: grid; grid-template-columns: minmax(170px, .65fr) minmax(260px, 2fr) auto; align-items: end; gap: 12px; }
+.ask-form { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(170px, .9fr) minmax(260px, 2fr) auto; align-items: end; gap: 12px; }
 .ask-field { display: grid; gap: 7px; min-width: 0; }
 .ask-form textarea { min-height: 66px; height: 66px; }
 .ask-form select { min-height: 44px; }
@@ -78,6 +78,7 @@ button, a, input, textarea, select, summary { transition: border-color .15s, bac
 
 @media (max-width: 1180px) {
   .ask-form { grid-template-columns: 1fr 2fr; }
+  .ask-form .ask-field:nth-child(3) { grid-column: 1 / -1; }
   .ask-form button { grid-column: 2; justify-self: end; }
 }
 @media (max-width: 780px) {
@@ -86,6 +87,7 @@ button, a, input, textarea, select, summary { transition: border-color .15s, bac
   .action-banner { align-items: flex-start; }
   .content { padding: 20px 16px 28px; }
   .ask-form { grid-template-columns: 1fr; }
+  .ask-form .ask-field:nth-child(3) { grid-column: 1; }
   .ask-form button { grid-column: 1; justify-self: start; }
   .chat-tasks { min-height: 0; }
   .chat-skills { display: none; }

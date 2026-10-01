@@ -42,3 +42,22 @@ test('chat context is bounded and excludes other workspaces', async () => {
   assert.equal(context.recent_other_work.length, 5);
   assert.equal(JSON.stringify(context).includes('Secret of other workspace'), false);
 });
+
+test('owner can address Quality reviewer directly without creating a formal verdict', async () => {
+  const taskId = randomUUID();
+  const memory = new Map([['one', { tasks: [{ id: taskId, title: 'Check finding', brief: '', status: 'review_queued' }],
+    messages: [], chatJobs: [], usage: [], nextMessageId: 1, mission: defaultMission }]]);
+  const id = await queueClaudeChat(null, memory, 'one', taskId, 'What evidence should be checked?', 'Quality reviewer');
+  const job = await claimClaudeChat(null, memory, 'one');
+  assert.equal(job.agent_id, 'Quality reviewer');
+  assert.equal(memory.get('one').messages[0].recipient_id, 'Quality reviewer');
+  assert.equal(await completeClaudeChat(null, memory, 'one', id, {
+    lease_token: job.lease_token, summary: 'The primary source and the paper methods should be checked before a formal verdict.',
+    model: 'claude-test', request_id: randomUUID(), evidence_refs: [],
+    usage: { input_tokens: 30, output_tokens: 20, cached_input_tokens: 0, cache_write_tokens: 0, reasoning_output_tokens: 0 },
+  }), true);
+  assert.equal(memory.get('one').messages.at(-1).agent_id, 'Quality reviewer');
+  assert.equal(memory.get('one').usage[0].agent_id, 'Quality reviewer');
+  assert.equal(memory.get('one').tasks[0].status, 'review_queued');
+  await assert.rejects(queueClaudeChat(null, memory, 'one', taskId, 'Forged message', 'CTO'), /Invalid chat recipient/);
+});
