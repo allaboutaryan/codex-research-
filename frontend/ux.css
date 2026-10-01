@@ -64,9 +64,9 @@ button, a, input, textarea, select, summary { transition: border-color .15s, bac
 .chat-explainer { color: #c3d0cb; }
 .chat-message p { color: #c2d0d0; font-size: 14px; }
 
-.setup-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 16px; padding: 0; list-style: none; counter-reset: step; }
-.setup-steps li { counter-increment: step; display: flex; align-items: flex-start; gap: 9px; color: #c2d0c8; font-size: 12px; line-height: 1.45; }
-.setup-steps li::before { content: counter(step); flex: none; display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%; background: #b7e66d20; color: #b7e66d; font-weight: 700; }
+.setup-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 16px; padding: 0; list-style: none; }
+.setup-steps li { display: flex; align-items: flex-start; gap: 9px; color: #c2d0c8; font-size: 12px; line-height: 1.45; }
+.step-number { flex: none; display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%; background: #b7e66d20; color: #b7e66d; font-weight: 700; }
 .setup-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .setup-actions .pairing-note { margin-left: 4px; }
 .pairing-panel button + button { margin-left: 0; }

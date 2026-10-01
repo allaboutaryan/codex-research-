@@ -246,9 +246,9 @@ function renderUsage() {
     <section class="panel pairing-panel" id="claude-setup">
       <div class="panel-head"><div><div class="eyebrow">GET STARTED</div><h2>Connect Claude Code locally</h2></div><span class="panel-counter">No account token sent to Render</span></div>
       <ol class="setup-steps">
-        <li><span>Sign in to Claude Code on your computer.</span></li>
-        <li><span>Pair this workspace and copy the one-time key below.</span></li>
-        <li><span>In the repository’s <code>backend</code> folder, run the command shown below and keep Terminal open.</span></li>
+        <li><span class="step-number" aria-hidden="true">1</span><span>Sign in to Claude Code on your computer.</span></li>
+        <li><span class="step-number" aria-hidden="true">2</span><span>Pair this workspace and copy the one-time key below.</span></li>
+        <li><span class="step-number" aria-hidden="true">3</span><span>In the repository’s <code>backend</code> folder, run the command shown below and keep Terminal open.</span></li>
       </ol>
       <div class="setup-actions"><button id="pair-worker" type="button">${['online', 'paired_offline'].includes(claudeConnection?.status) ? 'Rotate worker key' : 'Pair local Claude'}</button>${pairingKey ? '<button id="copy-worker-key" type="button">Copy one-time worker key</button>' : ''}<span class="pairing-note" role="status">${escapeHTML(pairingNote)}</span></div>
       <pre>NORTHSTAR_WORKER_KEY="$(pbpaste)" npm run worker:claude</pre>
