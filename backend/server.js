@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { readUsage } from './usage-store.js';
 import { claimClaudeTask, completeClaudeTask, failClaudeTask, heartbeatClaudeWorker, pairClaudeWorker, queueClaudeTask, workspaceForWorkerKey } from './claude-jobs.js';
+import { buildChatContext, claimClaudeChat, completeClaudeChat, defaultMission, failClaudeChat, queueClaudeChat, readProjectContext, saveProjectContext } from './claude-chat.js';
 
 const port = Number(process.env.PORT ?? 8787);
 const pool = process.env.DATABASE_URL ? new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 4 }) : null;
@@ -51,6 +52,8 @@ async function init() {
       id text PRIMARY KEY,
       created_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS mission text NOT NULL DEFAULT '${defaultMission.replaceAll("'", "''")}';
+    ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS context_notes text NOT NULL DEFAULT '';
     CREATE TABLE IF NOT EXISTS tasks (
       id text PRIMARY KEY,
       workspace_id text NOT NULL REFERENCES workspaces(id),
@@ -111,6 +114,18 @@ async function init() {
     ALTER TABLE claude_worker_presence ALTER COLUMN last_seen_at DROP NOT NULL;
     ALTER TABLE claude_worker_presence ADD COLUMN IF NOT EXISTS worker_key_hash text;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_claude_worker_key_hash ON claude_worker_presence(worker_key_hash);
+    CREATE TABLE IF NOT EXISTS claude_chat_jobs (
+      id text PRIMARY KEY,
+      workspace_id text NOT NULL REFERENCES workspaces(id),
+      task_id text NOT NULL REFERENCES tasks(id),
+      question text NOT NULL,
+      status text NOT NULL DEFAULT 'queued',
+      attempts integer NOT NULL DEFAULT 0,
+      lease_token text,
+      lease_expires_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_claude_chat_workspace_created ON claude_chat_jobs(workspace_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_tasks_workspace_created ON tasks(workspace_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_events_workspace_id ON events(workspace_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_messages_workspace_id ON agent_messages(workspace_id, id DESC);
@@ -121,7 +136,7 @@ async function init() {
 
 async function ensureWorkspace(workspace) {
   if (!pool) {
-    if (!memory.has(workspace)) memory.set(workspace, { tasks: [], events: [], messages: [], usage: [], nextId: 1, nextMessageId: 1 });
+    if (!memory.has(workspace)) memory.set(workspace, { tasks: [], events: [], messages: [], chatJobs: [], usage: [], mission: defaultMission, context_notes: '', nextId: 1, nextMessageId: 1 });
     return;
   }
   await pool.query('INSERT INTO workspaces (id) VALUES ($1) ON CONFLICT DO NOTHING', [workspace]);
@@ -131,14 +146,15 @@ async function readState(workspace) {
   await ensureWorkspace(workspace);
   if (!pool) {
     const state = memory.get(workspace);
-    return { tasks: [...state.tasks].reverse().map(({ claude_lease_token, claude_lease_expires_at, ...task }) => task), events: [...state.events].reverse().slice(0, 50), messages: [...state.messages].reverse().slice(0, 200) };
+    return { tasks: [...state.tasks].reverse().map(({ claude_lease_token, claude_lease_expires_at, ...task }) => task), events: [...state.events].reverse().slice(0, 50), messages: [...state.messages].reverse().slice(0, 200), chatJobs: [...state.chatJobs].reverse().slice(0, 30).map(({ lease_token, lease_expires_at, question, ...job }) => job) };
   }
-  const [tasks, events, messages] = await Promise.all([
+  const [tasks, events, messages, chatJobs] = await Promise.all([
     pool.query('SELECT id, workspace_id, title, brief, status, step, claude_attempts, created_at, updated_at FROM tasks WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 30', [workspace]),
     pool.query('SELECT * FROM events WHERE workspace_id = $1 ORDER BY id DESC LIMIT 50', [workspace]),
     pool.query('SELECT * FROM agent_messages WHERE workspace_id = $1 ORDER BY id DESC LIMIT 200', [workspace]),
+    pool.query('SELECT id, task_id, status, created_at FROM claude_chat_jobs WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 30', [workspace]),
   ]);
-  return { tasks: tasks.rows, events: events.rows, messages: messages.rows };
+  return { tasks: tasks.rows, events: events.rows, messages: messages.rows, chatJobs: chatJobs.rows };
 }
 
 async function createTask(workspace, title, brief) {
@@ -257,11 +273,26 @@ const server = http.createServer(async (request, response) => {
     if (!workspace) return send(response, 401, { error: workerCall ? 'A valid worker key is required' : 'A workspace key is required' });
     if (request.method === 'GET' && url.pathname === '/api/state') {
       const state = await readState(workspace);
-      return send(response, 200, { ...state, mode: state.tasks.some((task) => task.status.startsWith('claude_') || task.status === 'awaiting_review') ? 'claude_pilot' : 'demo', database: pool ? 'postgres' : 'memory', maxTasks: 20 });
+      return send(response, 200, { ...state, mode: state.chatJobs.length || state.tasks.some((task) => task.status.startsWith('claude_') || task.status === 'awaiting_review') ? 'claude_pilot' : 'demo', database: pool ? 'postgres' : 'memory', maxTasks: 20 });
     }
     if (request.method === 'GET' && url.pathname === '/api/usage') {
       await ensureWorkspace(workspace);
       return send(response, 200, await readUsage(pool, memory, workspace));
+    }
+    if (request.method === 'GET' && url.pathname === '/api/context') {
+      await ensureWorkspace(workspace);
+      return send(response, 200, await readProjectContext(pool, memory, workspace));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/context') {
+      await ensureWorkspace(workspace);
+      return send(response, 200, await saveProjectContext(pool, memory, workspace, await bodyOf(request)));
+    }
+    if (request.method === 'POST' && url.pathname === '/api/chat') {
+      await ensureWorkspace(workspace);
+      const body = await bodyOf(request);
+      if (typeof body.task_id !== 'string' || !/^[a-f0-9-]{36}$/.test(body.task_id)) return send(response, 400, { error: 'A task is required for Claude chat' });
+      const id = await queueClaudeChat(pool, memory, workspace, body.task_id, body.message);
+      return send(response, id ? 201 : 404, id ? { id } : { error: 'Task not found' });
     }
     if (request.method === 'POST' && url.pathname === '/api/tasks') {
       const body = await bodyOf(request);
@@ -282,7 +313,12 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === 'POST' && url.pathname === '/api/worker/claude/claim') {
       await ensureWorkspace(workspace);
-      return send(response, 200, { task: await claimClaudeTask(pool, memory, workspace) });
+      const task = await claimClaudeTask(pool, memory, workspace);
+      return send(response, 200, { task: task ? { ...task, context: await buildChatContext(pool, memory, workspace, task.id, '') } : null });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/worker/claude/claim-chat') {
+      await ensureWorkspace(workspace);
+      return send(response, 200, { job: await claimClaudeChat(pool, memory, workspace) });
     }
     const claudeTask = url.pathname.match(/^\/api\/tasks\/([a-f0-9-]{36})\/start-claude$/);
     if (request.method === 'POST' && claudeTask) {
@@ -299,6 +335,15 @@ const server = http.createServer(async (request, response) => {
         : await failClaudeTask(pool, memory, workspace, claudeResult[1], body.lease_token, body.code);
       return send(response, saved ? 200 : 409, saved ? { ok: true } : { error: 'The Claude lease is no longer active' });
     }
+    const chatResult = url.pathname.match(/^\/api\/worker\/claude\/chat\/([a-f0-9-]{36})\/(complete|fail)$/);
+    if (request.method === 'POST' && chatResult) {
+      await ensureWorkspace(workspace);
+      const body = await bodyOf(request);
+      const saved = chatResult[2] === 'complete'
+        ? await completeClaudeChat(pool, memory, workspace, chatResult[1], body)
+        : await failClaudeChat(pool, memory, workspace, chatResult[1], body.lease_token, body.code);
+      return send(response, saved ? 200 : 409, saved ? { ok: true } : { error: 'The Claude chat lease is no longer active' });
+    }
     const match = url.pathname.match(/^\/api\/tasks\/([a-f0-9-]{36})\/start$/);
     if (request.method === 'POST' && match) {
       await ensureWorkspace(workspace);
@@ -307,7 +352,7 @@ const server = http.createServer(async (request, response) => {
     }
     return send(response, 404, { error: 'Not found' });
   } catch (error) {
-    const badRequest = error instanceof SyntaxError || /too large|limited to 20|Invalid |must be|does not match|is required|exceeds its total/.test(error.message);
+    const badRequest = error instanceof SyntaxError || /too large|limited to 20|Invalid |must be|does not match|is required|exceeds its total|at most five|Question must|Project goal must/.test(error.message);
     if (!badRequest) console.error('Request failed:', error);
     return send(response, badRequest ? 400 : 500, { error: badRequest ? error.message : 'Service unavailable' });
   }

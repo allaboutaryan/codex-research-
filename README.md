@@ -2,7 +2,7 @@
 
 Northstar Lab is an operations console for a research team that investigates real problems, checks evidence independently, and turns promising gaps into software-product opportunities. The long-term goal is a supervised team of AI agents whose work, decisions, costs, and daily progress are visible to the human owner.
 
-**Current status:** The [live dashboard](https://northstar-lab-woad.vercel.app/) still offers a scripted workflow demo, and now also supports one **owner-operated Claude research worker**. The [Agent chats](https://northstar-lab-woad.vercel.app/#chats) feed labels scripted messages separately from real Claude drafts; [Worker usage](https://northstar-lab-woad.vercel.app/#usage) shows recorded calls. Claude runs only when the owner pairs and starts the local worker. A draft stops at **awaiting independent QA**—it is not an accepted finding. CTO, manager, lead, QA, and daily reports remain planned, not live model-backed agents.
+**Current status:** The [live dashboard](https://northstar-lab-woad.vercel.app/) offers a scripted workflow demo and one **owner-operated Claude research worker**. [Agent chats](https://northstar-lab-woad.vercel.app/#chats) now also lets the owner ask task-scoped questions, save the project goal and memory notes, and see Claude's real answers separately from scripted messages and unreviewed research drafts. [Worker usage](https://northstar-lab-woad.vercel.app/#usage) shows recorded calls. Claude runs only when the owner pairs and starts the local worker. A research draft stops at **awaiting independent QA**—it is not an accepted finding. CTO, manager, lead, QA, and daily reports remain planned, not live model-backed agents.
 
 ## The team
 
@@ -68,6 +68,12 @@ The [Worker usage view](https://northstar-lab-woad.vercel.app/#usage) shows role
 
 The code includes normalizers for OpenAI and Claude response token fields. Cached input and reasoning output are shown as **subsets** of input/output, not extra tokens. Claude cache-write and cache-read tokens are included once in total input. The Claude worker submits measured usage after a successful run. Codex is still a planned route; there is no OpenAI account connection, automatic account rotation, or account-token entry in the dashboard.
 
+## Persistent context and owner chat
+
+In [Agent chats](https://northstar-lab-woad.vercel.app/#chats), the owner can edit the **project goal** and **memory notes** and ask Claude about a selected task. A question is saved immediately, queued if the local worker is offline, and answered when that worker runs. The owner can see the queue state and recent task conversation, with real messages distinct from scripted demo handoffs; older messages remain in PostgreSQL beyond the dashboard's latest-200 display. Owner chat is supported for the live Claude Research worker only; the other role names in the demo do not answer questions yet. Chat answers are not QA-approved findings.
+
+Each Claude research run or chat answer receives the saved goal and notes, current task title/brief/status, up to 12 recent real messages on that task, and five recent real cross-task work messages. Message excerpts are capped at 700 characters apiece to avoid sending an unlimited transcript or repeatedly paying for old context. The PostgreSQL message ledger persists beyond the context packet. Important long-lived decisions should be put in memory notes; older messages outside the selected packet are not guaranteed to be known by the model. No hidden reasoning or OAuth credential is stored in chat.
+
 ## Run the Claude research worker
 
 This is for the owner's own Claude Code subscription on an owner-operated Mac or private machine. It does **not** relay an OAuth token or API key to Render. [Claude Code supports `claude -p` non-interactive output and usage metadata](https://code.claude.com/docs/en/headless), and [Anthropic currently says this usage draws from subscription limits](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan). [Anthropic warns against routing third-party traffic through subscription limits](https://support.claude.com/en/articles/13189465-log-in-to-your-claude-account); do not turn this personal companion into a hosted multi-user subscription proxy.
@@ -80,8 +86,8 @@ This is for the owner's own Claude Code subscription on an owner-operated Mac or
    NORTHSTAR_WORKER_KEY="$(pbpaste)" npm run worker:claude
    ```
 
-   The command watches for queued work while the computer and Terminal process stay running. Use `npm run worker:claude -- --once` with the same environment variable to process at most one task.
-4. Add a narrowly scoped task on the dashboard and click **Run Claude**. The worker claims it, uses Claude Code with web search/fetch only, and submits a source-linked draft to Agent chats. The backend stores measured tokens and changes the task to **Awaiting QA**. No reviewer runs automatically yet.
+   The command watches for queued work while the computer and Terminal process stay running. Use `npm run worker:claude -- --once` with the same environment variable to process at most one queued item (question or research task).
+4. Add a narrowly scoped task on the dashboard and click **Run Claude**. The worker claims it, uses Claude Code with web search/fetch only, and submits a source-linked draft to Agent chats. The backend stores measured tokens and changes the task to **Awaiting QA**. You may also open **Agent chats**, select that task, and ask Claude questions; those answers queue and use the same local worker. No reviewer runs automatically yet.
 
 Each run uses Sonnet, at most four model turns, an approximately $0.50 **list-price** budget guard (not a claim about subscription billing), a six-minute timeout, and instructions to check up to three primary sources. Claude has no file, shell, browser automation, or MCP tools for this pilot. Treat its citations and findings as unverified until QA checks them. The local worker key can authorize draft submission in this workspace; do not paste it into chat or share it. If the Mac sleeps, the worker stops; UptimeRobot does not run it.
 
@@ -92,10 +98,11 @@ Each run uses Sonnet, at most four model turns, an approximately $0.50 **list-pr
 | Dashboard and scripted PM → lead → worker → QA → revision → CTO walkthrough | Live demo |
 | Task/event API on Render and frontend on Vercel | Live demo |
 | UptimeRobot check of the API `/health` endpoint every five minutes | Configured |
-| Dedicated [Agent chats view](https://northstar-lab-woad.vercel.app/#chats) with task/sender filters and links to skills | Live; scripted handoffs and labeled Claude drafts |
+| Dedicated [Agent chats view](https://northstar-lab-woad.vercel.app/#chats) with task/sender filters and links to skills | Live; scripted handoffs, labeled Claude drafts, and owner questions/answers |
 | PostgreSQL persistence of demo tasks, events, and agent messages | Connected on Render; the free database expires October 30, 2026 unless upgraded |
 | [Worker usage view](https://northstar-lab-woad.vercel.app/#usage), Codex/Claude routing, and usage ledger | Live; Claude calls record usage after successful runs |
 | Owner-operated Claude Code research worker with separate pairing key | Implemented; runs only while the owner starts and keeps the local process alive |
+| Durable project goal, memory notes, and bounded context for Claude runs | Implemented; full message history is retained, but only selected recent excerpts enter each model call |
 | Versioned role skills and shared message/report contract | Research worker instructions used by the pilot; other roles are still specifications |
 | Independent QA, per-agent daily reports, CTO daily roll-up | Planned |
 | Full ten-year literature review, accepted research, authenticated users | Planned |

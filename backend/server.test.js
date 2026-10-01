@@ -42,4 +42,25 @@ test('browser and local Claude worker have separate permissions', async (context
   const usage = await (await browser('/api/usage')).json();
   assert.equal(usage.summary.total.totalTokens, 30);
   assert.equal(usage.connections.find((item) => item.provider === 'anthropic').status, 'online');
+  assert.equal((await browser('/api/context', { method: 'POST', body: JSON.stringify({
+    mission: 'Research a useful, durable software product before choosing what to build.', notes: 'Keep findings traceable.',
+  }) })).status, 200);
+  assert.equal((await worker('/api/context')).status, 401);
+  const asked = await (await browser('/api/chat', { method: 'POST', body: JSON.stringify({ task_id: task.id, message: 'What do we know so far?' }) })).json();
+  assert.ok(asked.id);
+  assert.equal((await worker('/api/chat', { method: 'POST', body: JSON.stringify({ task_id: task.id, message: 'Forged owner question' }) })).status, 401);
+  const chatClaim = await (await worker('/api/worker/claude/claim-chat', { method: 'POST' })).json();
+  assert.equal(chatClaim.job.id, asked.id);
+  assert.match(chatClaim.job.context.project_goal, /durable software product/);
+  assert.equal(chatClaim.job.context.recent_task_history[0].kind, 'finding');
+  const chatComplete = await worker(`/api/worker/claude/chat/${asked.id}/complete`, { method: 'POST', body: JSON.stringify({
+    lease_token: chatClaim.job.lease_token, summary: 'We have a tentative draft, but no independent QA has accepted its finding yet.',
+    model: 'claude-test', request_id: '33333333-3333-4333-8333-333333333333', evidence_refs: [],
+    usage: { input_tokens: 30, output_tokens: 20, cached_input_tokens: 0, cache_write_tokens: 0, reasoning_output_tokens: 0 },
+  }) });
+  assert.equal(chatComplete.status, 200);
+  const withChat = await (await browser('/api/state')).json();
+  assert.equal(withChat.chatJobs[0].status, 'complete');
+  assert.equal(withChat.messages[0].kind, 'answer');
+  assert.equal((await (await browser('/api/usage')).json()).summary.total.totalTokens, 80);
 });

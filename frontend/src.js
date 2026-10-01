@@ -22,12 +22,15 @@ const roles = [
 
 let data = { tasks: [], events: [], messages: [], modelCalls: 0, inputTokens: 0, outputTokens: 0, database: 'memory' };
 let usageData = null;
+let contextData = null;
 let usageError = '';
 let pairingNote = '';
 let pairingKey = null;
 let selectedTask = null;
 let chatTask = 'all';
 let chatAgent = 'all';
+let chatTargetTask = null;
+let contextDraftDirty = false;
 let resetChatScroll = true;
 let busy = false;
 let error = '';
@@ -143,11 +146,16 @@ function renderMessage(message) {
   const url = skillURL(message.agent_id);
   const speaker = url ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${escapeHTML(message.agent_id)} ↗</a>` : `<strong>${escapeHTML(message.agent_id)}</strong>`;
   const refs = renderRefs(message.artifact_refs, 'Artifact') + renderRefs(message.evidence_refs, 'Evidence');
+  const job = data.chatJobs?.find((item) => item.id === message.run_id);
+  const provenance = message.demo ? 'Scripted demo' : message.agent_id === 'Owner'
+    ? `Your question · ${job?.status || 'sent'}` : message.kind === 'answer'
+      ? 'Claude answer · not independently reviewed' : message.agent_id === 'System'
+        ? 'Worker status' : 'Real Claude draft · QA pending';
   return `<article class="chat-message">
     <div class="chat-avatar">${escapeHTML(role?.short || message.agent_id.slice(0, 2).toUpperCase())}</div>
     <div class="chat-message-body">
       <div class="chat-message-head"><div>${speaker}<span class="chat-to">→ ${escapeHTML(message.recipient_id)}</span></div><time>${formatDateTime(message.created_at)}</time></div>
-      <div class="chat-message-meta"><span class="message-kind">${escapeHTML(message.kind)}</span><span>${escapeHTML(task?.title || 'Unknown task')}</span>${message.demo ? '<span class="demo-inline">Scripted demo</span>' : '<span class="qa-inline">Real Claude draft · QA pending</span>'}</div>
+      <div class="chat-message-meta"><span class="message-kind">${escapeHTML(message.kind)}</span><span>${escapeHTML(task?.title || 'Unknown task')}</span><span class="${message.demo ? 'demo-inline' : 'qa-inline'}">${escapeHTML(provenance)}</span></div>
       <p>${escapeHTML(message.summary)}</p>
       ${refs ? `<div class="chat-refs">${refs}</div>` : ''}
     </div>
@@ -158,12 +166,31 @@ function renderChats() {
   if (chatTask !== 'all' && !data.tasks.some((task) => task.id === chatTask)) chatTask = 'all';
   const messages = data.messages.filter((message) => (chatTask === 'all' || message.task_id === chatTask) && (chatAgent === 'all' || message.agent_id === chatAgent)).slice().reverse();
   const selected = data.tasks.find((task) => task.id === chatTask);
+  if (!chatTargetTask || !data.tasks.some((task) => task.id === chatTargetTask)) chatTargetTask = selectedTask || data.tasks[0]?.id || null;
+  const pendingQuestions = data.chatJobs?.filter((item) => ['queued', 'running'].includes(item.status)).length || 0;
   return `
     <section class="intro">
-      <div><div class="eyebrow">SHARED WORKROOM / AUDITABLE HANDOFFS</div><h1>Agent chats</h1><p>See what each role passed to the next, across every task.</p></div>
-      <span class="demo-tag">${data.mode === 'claude_pilot' ? 'MIXED FEED · REAL DRAFTS LABELED' : 'SCRIPTED DEMO · 0 MODEL CALLS'}</span>
+      <div><div class="eyebrow">SHARED WORKROOM / AUDITABLE HANDOFFS</div><h1>Agent chats</h1><p>Ask the research worker and follow each task’s visible conversation.</p></div>
+      <span class="demo-tag">${data.mode === 'claude_pilot' ? 'MIXED FEED · REAL MESSAGES LABELED' : 'SCRIPTED DEMO · 0 MODEL CALLS'}</span>
     </section>
-    <div class="chat-explainer">Scripted demo messages are labeled. Claude research drafts, when present, are real model output but unverified until an independent reviewer accepts them. The feed shows work, not hidden model reasoning. <a href="${REPO}/blob/main/agents/PROTOCOL.md" target="_blank" rel="noopener noreferrer">Agent message protocol ↗</a></div>
+    <div class="chat-explainer">Ask the live local Claude research worker about a task. Questions and answers are saved; scripted handoffs stay labeled. Claude uses the project goal, saved notes, task brief, and selected prior work—not an unlimited chat history. Answers are not independently reviewed. This pilot has no account login yet: do not enter credentials or private research. <a href="${REPO}/blob/main/agents/PROTOCOL.md" target="_blank" rel="noopener noreferrer">Agent message protocol ↗</a></div>
+    <details class="panel context-panel" ${document.querySelector('.context-panel')?.open ? 'open' : ''}>
+      <summary>Project goal and memory <span>View or edit the context Claude receives ↗</span></summary>
+      <form id="context-form" class="context-form">
+        <label for="project-goal">Project goal</label><textarea id="project-goal" maxlength="1500" required>${escapeHTML(contextData?.mission || '')}</textarea>
+        <label for="project-notes">Owner memory notes · key decisions, constraints, and facts to retain</label><textarea id="project-notes" maxlength="2000" placeholder="e.g. Prioritize developer tools; validate demand before building.">${escapeHTML(contextData?.notes || '')}</textarea>
+        <button type="submit" ${busy || !contextData ? 'disabled' : ''}>Save project memory</button>
+      </form>
+    </details>
+    <section class="panel ask-panel">
+      <div class="panel-head"><div><div class="eyebrow">OWNER ↔ RESEARCH WORKER</div><h2>Ask Claude about the work</h2></div><span class="panel-counter">${pendingQuestions} waiting · replies need local worker</span></div>
+      <form id="ask-form" class="ask-form">
+        <label for="chat-task-picker">Task context</label><select id="chat-task-picker" required>${data.tasks.map((task) => `<option value="${escapeHTML(task.id)}" ${chatTargetTask === task.id ? 'selected' : ''}>${escapeHTML(task.title)}</option>`).join('')}</select>
+        <label for="owner-question">Your question</label><textarea id="owner-question" maxlength="2000" required minlength="3" placeholder="Ask what we found, what remains uncertain, or what to do next…"></textarea>
+        <button type="submit" ${busy || !data.tasks.length ? 'disabled' : ''}>Send to Claude</button>
+      </form>
+      <small>Only the Research worker is live today. Other roles remain scripted until connected. Questions queue while your local worker is offline.</small>
+    </section>
     <div class="chat-layout">
       <section class="panel chat-tasks" aria-label="Conversation tasks">
         <div class="panel-head"><div><div class="eyebrow">CONVERSATIONS</div><h2>Task threads</h2></div><span class="panel-counter">${data.messages.length} messages</span></div>
@@ -177,7 +204,7 @@ function renderChats() {
         <div class="panel-head"><div><div class="eyebrow">VISIBLE TEAM HANDOFFS</div><h2>${escapeHTML(selected?.title || 'All conversations')}</h2></div><span class="live-label"><i></i>Updates every 1.5s</span></div>
         <div class="chat-controls"><label for="chat-agent-filter">Filter by sender</label><select id="chat-agent-filter"><option value="all" ${chatAgent === 'all' ? 'selected' : ''}>All agents</option>${roles.map((role) => `<option value="${escapeHTML(role.label)}" ${chatAgent === role.label ? 'selected' : ''}>${escapeHTML(role.label)}</option>`).join('')}</select></div>
         <div class="chat-feed" role="log" aria-label="Agent messages" aria-live="polite">
-          ${messages.length ? messages.map(renderMessage).join('') : `<div class="empty chat-empty">${data.tasks.length ? 'No messages for this filter yet. Start a queued demo task to watch handoffs.' : 'No conversations yet. Add a demo task in the task queue to begin.'}<br/><a href="#tasks">Go to task queue →</a></div>`}
+          ${messages.length ? messages.map(renderMessage).join('') : `<div class="empty chat-empty">${data.tasks.length ? 'No messages for this filter yet. Ask Claude or run a task.' : 'No conversations yet. Add a task to begin.'}<br/><a href="#tasks">Go to task queue →</a></div>`}
         </div>
         <div class="chat-thread-foot"><span>${messages.length} shown</span><span>${data.database === 'postgres' ? 'Saved in PostgreSQL' : 'Temporary in-memory data'}</span></div>
       </section>
@@ -235,19 +262,14 @@ function renderUsage() {
 }
 
 function signature() {
-  return JSON.stringify([data.tasks, data.events, data.messages, data.database, data.mode, usageData, usageError, pairingNote, connection, error, selectedTask, chatTask, chatAgent, currentView(), busy]);
+  return JSON.stringify([data.tasks, data.events, data.messages, data.chatJobs, data.database, data.mode, usageData, contextData, usageError, pairingNote, connection, error, selectedTask, chatTask, chatAgent, chatTargetTask, currentView(), busy]);
 }
 
 function render() {
-  const oldTitle = document.querySelector('#title');
-  const oldBrief = document.querySelector('#brief');
-  const draft = oldTitle ? {
-    title: oldTitle.value,
-    brief: oldBrief.value,
-    focused: document.activeElement?.id,
-    start: document.activeElement?.selectionStart,
-    end: document.activeElement?.selectionEnd,
-  } : null;
+  const editableIds = ['title', 'brief', 'owner-question', 'project-goal', 'project-notes'];
+  const draft = Object.fromEntries(editableIds.map((id) => [id, document.getElementById(id)?.value]));
+  const focused = editableIds.includes(document.activeElement?.id) ? document.activeElement.id : null;
+  const selection = focused ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
   const oldFeed = document.querySelector('.chat-feed');
   const oldScroll = oldFeed?.scrollTop || 0;
   const wasAtBottom = !oldFeed || oldFeed.scrollHeight - oldFeed.scrollTop - oldFeed.clientHeight < 48;
@@ -266,7 +288,7 @@ function render() {
         <div class="side-bottom">
           <div class="side-label">CURRENT MODE</div>
           <div class="mode-card"><span class="mode-orb"></span><div><strong>${data.mode === 'claude_pilot' ? 'Claude pilot' : 'Workflow demo'}</strong><small>${formatNumber(usageData?.summary?.total?.calls)} actual AI requests</small></div></div>
-          <p>${data.mode === 'claude_pilot' ? 'Claude research drafts require independent QA before acceptance.' : 'Sample tasks show scripted handoffs. Start the local Claude worker for real drafts.'}</p>
+          <p>${data.mode === 'claude_pilot' ? 'Claude answers are unreviewed; research drafts require independent QA.' : 'Sample tasks show scripted handoffs. Start the local Claude worker for real drafts.'}</p>
           <a class="repo-link" href="${REPO}" target="_blank" rel="noopener noreferrer">View GitHub repository ↗</a>
         </div>
       </aside>
@@ -284,6 +306,10 @@ function render() {
     </div>`;
 
   document.querySelector('#task-form')?.addEventListener('submit', create);
+  document.querySelector('#ask-form')?.addEventListener('submit', askClaude);
+  document.querySelector('#context-form')?.addEventListener('submit', saveContext);
+  document.querySelectorAll('#project-goal, #project-notes').forEach((field) => field.addEventListener('input', () => { contextDraftDirty = true; }));
+  document.querySelector('#chat-task-picker')?.addEventListener('change', (event) => { chatTargetTask = event.target.value; });
   document.querySelectorAll('[data-select]').forEach((button) => button.addEventListener('click', () => { selectedTask = button.dataset.select; render(); }));
   document.querySelectorAll('[data-run]').forEach((button) => button.addEventListener('click', () => run(button.dataset.run)));
   document.querySelectorAll('[data-run-claude]').forEach((button) => button.addEventListener('click', () => runClaude(button.dataset.runClaude)));
@@ -302,16 +328,15 @@ function render() {
     catch { pairingNote = 'Clipboard access failed. Retry in a secure browser context.'; }
     render();
   });
-  document.querySelectorAll('[data-chat-task]').forEach((button) => button.addEventListener('click', () => { chatTask = button.dataset.chatTask; resetChatScroll = true; render(); }));
+  document.querySelectorAll('[data-chat-task]').forEach((button) => button.addEventListener('click', () => { chatTask = button.dataset.chatTask; if (chatTask !== 'all') chatTargetTask = chatTask; resetChatScroll = true; render(); }));
   document.querySelector('#chat-agent-filter')?.addEventListener('change', (event) => { chatAgent = event.target.value; resetChatScroll = true; render(); });
-  if (draft && document.querySelector('#title')) {
-    document.querySelector('#title').value = draft.title;
-    document.querySelector('#brief').value = draft.brief;
-    if (draft.focused === 'title' || draft.focused === 'brief') {
-      const field = document.querySelector(`#${draft.focused}`);
-      field.focus();
-      field.setSelectionRange(draft.start, draft.end);
-    }
+  for (const id of editableIds) {
+    if (draft[id] !== undefined && document.getElementById(id) && (!id.startsWith('project-') || contextDraftDirty)) document.getElementById(id).value = draft[id];
+  }
+  if (focused && document.getElementById(focused)) {
+    const field = document.getElementById(focused);
+    field.focus();
+    field.setSelectionRange(...selection);
   }
   const feed = document.querySelector('.chat-feed');
   if (feed) {
@@ -331,7 +356,7 @@ async function refresh() {
     error = `Could not reach the operations backend: ${cause.message}`;
     connection = 'disconnected';
   }
-  const typing = document.activeElement?.id === 'title' || document.activeElement?.id === 'brief';
+  const typing = ['title', 'brief', 'owner-question', 'project-goal', 'project-notes'].includes(document.activeElement?.id);
   if (!busy && !typing && signature() !== lastRenderedSignature) render();
 }
 
@@ -342,7 +367,7 @@ async function refreshUsage() {
   } catch (cause) {
     usageError = `Could not load worker usage: ${cause.message}`;
   }
-  const typing = document.activeElement?.id === 'title' || document.activeElement?.id === 'brief';
+  const typing = ['title', 'brief', 'owner-question', 'project-goal', 'project-notes'].includes(document.activeElement?.id);
   if (!busy && !typing && signature() !== lastRenderedSignature) render();
 }
 
@@ -365,6 +390,44 @@ async function create(event) {
     busy = false;
     render();
   }
+}
+
+async function refreshContext() {
+  try { contextData = await request('/api/context'); }
+  catch (cause) { error = `Could not load project memory: ${cause.message}`; }
+  if (!['owner-question', 'project-goal', 'project-notes'].includes(document.activeElement?.id) && signature() !== lastRenderedSignature) render();
+}
+
+async function saveContext(event) {
+  event.preventDefault();
+  busy = true;
+  try {
+    contextData = await request('/api/context', { method: 'POST', body: JSON.stringify({
+      mission: document.querySelector('#project-goal').value.trim(), notes: document.querySelector('#project-notes').value.trim(),
+    }) });
+    contextDraftDirty = false;
+    error = '';
+  } catch (cause) { error = cause.message; }
+  finally { busy = false; render(); }
+}
+
+async function askClaude(event) {
+  event.preventDefault();
+  const taskId = document.querySelector('#chat-task-picker').value;
+  const field = document.querySelector('#owner-question');
+  const message = field.value.trim();
+  if (!taskId || !message) return;
+  busy = true;
+  try {
+    await request('/api/chat', { method: 'POST', body: JSON.stringify({ task_id: taskId, message }) });
+    field.value = '';
+    chatTask = taskId;
+    chatTargetTask = taskId;
+    resetChatScroll = true;
+    error = '';
+    await refresh();
+  } catch (cause) { error = cause.message; }
+  finally { busy = false; render(); }
 }
 
 async function run(id) {
@@ -410,5 +473,6 @@ window.addEventListener('hashchange', () => {
 render();
 refresh();
 refreshUsage();
+refreshContext();
 setInterval(refresh, 1500);
 setInterval(refreshUsage, 10000);

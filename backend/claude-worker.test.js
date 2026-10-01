@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildPrompt, parseClaudeResult } from './claude-worker.js';
+import { buildChatPrompt, buildPrompt, parseClaudeResult } from './claude-worker.js';
 
 test('Claude Code result becomes a safe usage record and source links', () => {
   const parsed = parseClaudeResult(JSON.stringify({
@@ -17,6 +17,7 @@ test('Claude Code result becomes a safe usage record and source links', () => {
 });
 
 test('task prompt is bounded and failed Claude output is rejected', () => {
-  assert.match(buildPrompt({ title: 'Test question', brief: 'Use 2020–2026' }), /Test question/);
+  assert.match(buildPrompt({ title: 'Test question', brief: 'Use 2020–2026', context: { project_goal: 'Choose evidence-backed software' } }), /Choose evidence-backed software/);
+  assert.match(buildChatPrompt({ question: 'What did we learn?', context: { recent_task_history: [{ text: 'The draft is unreviewed' }] } }), /The draft is unreviewed/);
   assert.throws(() => parseClaudeResult(JSON.stringify({ is_error: true, result: '' })), /invalid_output/);
 });
