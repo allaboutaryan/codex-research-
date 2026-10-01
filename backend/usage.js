@@ -35,12 +35,15 @@ export function normalizeAnthropicUsage(usage) {
   const uncached = tokens(usage.input_tokens);
   const read = tokens(usage.cache_read_input_tokens);
   const write = tokens(usage.cache_creation_input_tokens);
+  const output = tokens(usage.output_tokens);
+  const thinking = tokens(usage.output_tokens_details?.thinking_tokens);
+  if (thinking > output) throw new Error('Claude thinking tokens exceed output tokens');
   return {
     input_tokens: uncached + read + write,
-    output_tokens: tokens(usage.output_tokens),
+    output_tokens: output,
     cached_input_tokens: read,
     cache_write_tokens: write,
-    reasoning_output_tokens: 0,
+    reasoning_output_tokens: thinking,
   };
 }
 

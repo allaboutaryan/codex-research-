@@ -2,8 +2,9 @@ import http from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { readUsage } from './usage-store.js';
+import { claimClaudeTask, completeClaudeTask, failClaudeTask, heartbeatClaudeWorker, pairClaudeWorker, queueClaudeTask, workspaceForWorkerKey } from './claude-jobs.js';
 
-const port = Number(process.env.PORT || 8787);
+const port = Number(process.env.PORT ?? 8787);
 const pool = process.env.DATABASE_URL ? new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 4 }) : null;
 const memory = new Map();
 const phases = [
@@ -60,6 +61,9 @@ async function init() {
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS claude_attempts integer NOT NULL DEFAULT 0;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS claude_lease_token text;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS claude_lease_expires_at timestamptz;
     CREATE TABLE IF NOT EXISTS events (
       id bigserial PRIMARY KEY,
       workspace_id text NOT NULL REFERENCES workspaces(id),
@@ -99,6 +103,14 @@ async function init() {
       created_at timestamptz NOT NULL DEFAULT now(),
       UNIQUE (workspace_id, provider, request_id)
     );
+    CREATE TABLE IF NOT EXISTS claude_worker_presence (
+      workspace_id text PRIMARY KEY REFERENCES workspaces(id),
+      last_seen_at timestamptz,
+      worker_key_hash text UNIQUE
+    );
+    ALTER TABLE claude_worker_presence ALTER COLUMN last_seen_at DROP NOT NULL;
+    ALTER TABLE claude_worker_presence ADD COLUMN IF NOT EXISTS worker_key_hash text;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_claude_worker_key_hash ON claude_worker_presence(worker_key_hash);
     CREATE INDEX IF NOT EXISTS idx_tasks_workspace_created ON tasks(workspace_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_events_workspace_id ON events(workspace_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_agent_messages_workspace_id ON agent_messages(workspace_id, id DESC);
@@ -119,10 +131,10 @@ async function readState(workspace) {
   await ensureWorkspace(workspace);
   if (!pool) {
     const state = memory.get(workspace);
-    return { tasks: [...state.tasks].reverse(), events: [...state.events].reverse().slice(0, 50), messages: [...state.messages].reverse().slice(0, 200) };
+    return { tasks: [...state.tasks].reverse().map(({ claude_lease_token, claude_lease_expires_at, ...task }) => task), events: [...state.events].reverse().slice(0, 50), messages: [...state.messages].reverse().slice(0, 200) };
   }
   const [tasks, events, messages] = await Promise.all([
-    pool.query('SELECT * FROM tasks WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 30', [workspace]),
+    pool.query('SELECT id, workspace_id, title, brief, status, step, claude_attempts, created_at, updated_at FROM tasks WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 30', [workspace]),
     pool.query('SELECT * FROM events WHERE workspace_id = $1 ORDER BY id DESC LIMIT 50', [workspace]),
     pool.query('SELECT * FROM agent_messages WHERE workspace_id = $1 ORDER BY id DESC LIMIT 200', [workspace]),
   ]);
@@ -136,7 +148,7 @@ async function createTask(workspace, title, brief) {
     const state = memory.get(workspace);
     if (state.tasks.length >= 20) throw new Error('This demo workspace is limited to 20 tasks');
     state.tasks.push({ id, workspace_id: workspace, title, brief, status: 'queued', step: 0, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
-    state.events.push({ id: state.nextId++, workspace_id: workspace, task_id: id, role: 'System', message: 'Task queued for a workflow demo.', created_at: new Date().toISOString() });
+    state.events.push({ id: state.nextId++, workspace_id: workspace, task_id: id, role: 'System', message: 'Task created. Choose a demo walkthrough or Claude research run.', created_at: new Date().toISOString() });
     return id;
   }
   const client = await pool.connect();
@@ -145,7 +157,7 @@ async function createTask(workspace, title, brief) {
     const count = await client.query('SELECT count(*)::integer AS count FROM tasks WHERE workspace_id = $1', [workspace]);
     if (count.rows[0].count >= 20) throw new Error('This demo workspace is limited to 20 tasks');
     await client.query('INSERT INTO tasks (id, workspace_id, title, brief) VALUES ($1, $2, $3, $4)', [id, workspace, title, brief]);
-    await client.query('INSERT INTO events (workspace_id, task_id, role, message) VALUES ($1, $2, $3, $4)', [workspace, id, 'System', 'Task queued for a workflow demo.']);
+    await client.query('INSERT INTO events (workspace_id, task_id, role, message) VALUES ($1, $2, $3, $4)', [workspace, id, 'System', 'Task created. Choose a demo walkthrough or Claude research run.']);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -237,12 +249,15 @@ const server = http.createServer(async (request, response) => {
   if (request.method === 'OPTIONS') return send(response, 204, {});
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
   if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/health') return send(response, 200, { ok: true, database: pool ? 'postgres' : 'memory', mode: 'demo' });
-  const workspace = keyFrom(request);
-  if (!workspace) return send(response, 401, { error: 'A workspace key is required' });
   try {
+    const workerCall = url.pathname.startsWith('/api/worker/claude/') && url.pathname !== '/api/worker/claude/pair';
+    const workspace = workerCall
+      ? await workspaceForWorkerKey(pool, memory, request.headers['x-worker-key'])
+      : keyFrom(request);
+    if (!workspace) return send(response, 401, { error: workerCall ? 'A valid worker key is required' : 'A workspace key is required' });
     if (request.method === 'GET' && url.pathname === '/api/state') {
       const state = await readState(workspace);
-      return send(response, 200, { ...state, mode: 'demo', database: pool ? 'postgres' : 'memory', modelCalls: 0, inputTokens: 0, outputTokens: 0, maxTasks: 20 });
+      return send(response, 200, { ...state, mode: state.tasks.some((task) => task.status.startsWith('claude_') || task.status === 'awaiting_review') ? 'claude_pilot' : 'demo', database: pool ? 'postgres' : 'memory', maxTasks: 20 });
     }
     if (request.method === 'GET' && url.pathname === '/api/usage') {
       await ensureWorkspace(workspace);
@@ -256,6 +271,34 @@ const server = http.createServer(async (request, response) => {
       const id = await createTask(workspace, title, brief);
       return send(response, 201, { id });
     }
+    if (request.method === 'POST' && url.pathname === '/api/worker/claude/pair') {
+      await ensureWorkspace(workspace);
+      return send(response, 200, { worker_key: await pairClaudeWorker(pool, memory, workspace) });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/worker/claude/heartbeat') {
+      await ensureWorkspace(workspace);
+      await heartbeatClaudeWorker(pool, memory, workspace);
+      return send(response, 200, { ok: true });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/worker/claude/claim') {
+      await ensureWorkspace(workspace);
+      return send(response, 200, { task: await claimClaudeTask(pool, memory, workspace) });
+    }
+    const claudeTask = url.pathname.match(/^\/api\/tasks\/([a-f0-9-]{36})\/start-claude$/);
+    if (request.method === 'POST' && claudeTask) {
+      await ensureWorkspace(workspace);
+      const queued = await queueClaudeTask(pool, memory, workspace, claudeTask[1]);
+      return send(response, queued ? 200 : 409, queued ? { ok: true } : { error: 'Task is unavailable for Claude' });
+    }
+    const claudeResult = url.pathname.match(/^\/api\/worker\/claude\/([a-f0-9-]{36})\/(complete|fail)$/);
+    if (request.method === 'POST' && claudeResult) {
+      await ensureWorkspace(workspace);
+      const body = await bodyOf(request);
+      const saved = claudeResult[2] === 'complete'
+        ? await completeClaudeTask(pool, memory, workspace, claudeResult[1], body)
+        : await failClaudeTask(pool, memory, workspace, claudeResult[1], body.lease_token, body.code);
+      return send(response, saved ? 200 : 409, saved ? { ok: true } : { error: 'The Claude lease is no longer active' });
+    }
     const match = url.pathname.match(/^\/api\/tasks\/([a-f0-9-]{36})\/start$/);
     if (request.method === 'POST' && match) {
       await ensureWorkspace(workspace);
@@ -264,12 +307,12 @@ const server = http.createServer(async (request, response) => {
     }
     return send(response, 404, { error: 'Not found' });
   } catch (error) {
-    const badRequest = error instanceof SyntaxError || /too large|limited to 20/.test(error.message);
+    const badRequest = error instanceof SyntaxError || /too large|limited to 20|Invalid |must be|does not match|is required|exceeds its total/.test(error.message);
     if (!badRequest) console.error('Request failed:', error);
     return send(response, badRequest ? 400 : 500, { error: badRequest ? error.message : 'Service unavailable' });
   }
 });
 
 await init();
-server.listen(port, '0.0.0.0', () => console.log(`Northstar Lab API listening on ${port}`));
+server.listen(port, '0.0.0.0', () => console.log(`Northstar Lab API listening on ${server.address().port}`));
 setInterval(() => advance().catch((error) => console.error('Worker failed:', error)), 750).unref();

@@ -23,6 +23,8 @@ const roles = [
 let data = { tasks: [], events: [], messages: [], modelCalls: 0, inputTokens: 0, outputTokens: 0, database: 'memory' };
 let usageData = null;
 let usageError = '';
+let pairingNote = '';
+let pairingKey = null;
 let selectedTask = null;
 let chatTask = 'all';
 let chatAgent = 'all';
@@ -69,30 +71,32 @@ function activeRole(step) {
 }
 
 function renderTaskRows() {
+  const label = (status) => ({ queued: 'Queued', running: 'Demo running', complete: 'Demo complete', claude_queued: 'Claude queued', claude_running: 'Claude working', awaiting_review: 'Awaiting QA', claude_failed: 'Claude failed' })[status] || status;
   return data.tasks.length ? data.tasks.map((task) => `<div class="task-row ${task.id === selectedTask ? 'selected' : ''}" data-task="${escapeHTML(task.id)}">
-    <button class="task-select" type="button" data-select="${escapeHTML(task.id)}"><span class="task-title">${escapeHTML(task.title)}</span><span class="task-meta">${escapeHTML(task.brief || 'Workflow demo')} · ${formatTime(task.created_at)}</span></button>
-    <div class="task-end"><span class="pill ${escapeHTML(task.status)}">${task.status === 'complete' ? 'Complete' : task.status === 'running' ? 'Running' : 'Queued'}</span>${task.status === 'queued' ? `<button class="run-btn" type="button" data-run="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>Run demo</button>` : ''}</div>
+    <button class="task-select" type="button" data-select="${escapeHTML(task.id)}"><span class="task-title">${escapeHTML(task.title)}</span><span class="task-meta">${escapeHTML(task.brief || 'No extra context')} · ${formatTime(task.created_at)}</span></button>
+    <div class="task-end"><span class="pill ${escapeHTML(task.status)}">${escapeHTML(label(task.status))}</span>${task.status === 'queued' ? `<button class="run-btn" type="button" data-run="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>Run demo</button>` : ''}${['queued', 'claude_failed'].includes(task.status) ? `<button class="run-btn claude-run" type="button" data-run-claude="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>${task.status === 'claude_failed' ? 'Retry Claude' : 'Run Claude'}</button>` : ''}</div>
   </div>`).join('') : '<div class="empty">Add a task to see its handoffs here.</div>';
 }
 
 function renderOverview() {
-  const running = data.tasks.filter((task) => task.status === 'running');
+  const running = data.tasks.filter((task) => task.status === 'running' || task.status === 'claude_running');
   const complete = data.tasks.filter((task) => task.status === 'complete');
-  const queued = data.tasks.filter((task) => task.status === 'queued');
+  const queued = data.tasks.filter((task) => task.status === 'queued' || task.status === 'claude_queued');
+  const awaitingQA = data.tasks.filter((task) => task.status === 'awaiting_review');
   const active = running[0];
   if (!selectedTask || !data.tasks.some((task) => task.id === selectedTask)) selectedTask = active?.id || data.tasks[0]?.id || null;
   const focusEvents = data.events.filter((event) => !selectedTask || event.task_id === selectedTask);
-  const currentRole = active ? activeRole(active.step) : '';
+  const currentRole = active ? active.status === 'claude_running' ? 'Research worker' : activeRole(active.step) : '';
 
   return `
     <section class="intro">
       <div><div class="eyebrow">RESEARCH COMPANY / CONTROL ROOM</div><h1>Agent operations</h1><p>Watch work move from assignment to independent review.</p></div>
-      <span class="demo-tag">DEMO MODE · NO RESEARCH RUNS</span>
+      <span class="demo-tag">${data.mode === 'claude_pilot' ? 'CLAUDE PILOT · QA REQUIRED' : 'DEMO MODE · NO RESEARCH RUNS'}</span>
     </section>
     <section class="metrics" aria-label="Workspace metrics">
       <div class="metric"><span>Total tasks</span><strong>${data.tasks.length}</strong><small>${queued.length} waiting in queue</small></div>
       <div class="metric"><span>Active runs</span><strong>${running.length}</strong><small>${running.length ? 'Workflow in progress' : 'No work in progress'}</small></div>
-      <div class="metric"><span>Completed</span><strong>${complete.length}</strong><small>Demo walkthroughs</small></div>
+      <div class="metric"><span>${awaitingQA.length ? 'Awaiting QA' : 'Completed'}</span><strong>${awaitingQA.length || complete.length}</strong><small>${awaitingQA.length ? 'Claude drafts, not accepted findings' : 'Demo walkthroughs'}</small></div>
       <div class="metric accent"><span>AI tokens used</span><strong>${formatNumber(usageData?.summary?.total?.totalTokens)}</strong><small>${formatNumber(usageData?.summary?.total?.calls)} actual model calls</small></div>
     </section>
     <section class="flow-section">
@@ -110,9 +114,9 @@ function renderOverview() {
       <section id="tasks" class="panel tasks-panel">
         <div class="panel-head"><div><div class="eyebrow">ASSIGNMENTS</div><h2>Task queue</h2></div><span class="panel-counter">${data.tasks.length} tasks</span></div>
         <form id="task-form" class="task-form">
-          <label for="title">New demo task</label>
+          <label for="title">New task · choose demo or Claude after adding</label>
           <div class="form-row"><input id="title" name="title" maxlength="120" required minlength="3" placeholder="e.g. Explore developer workflow gaps" /><button type="submit" ${busy ? 'disabled' : ''}>Add task</button></div>
-          <input id="brief" name="brief" maxlength="1000" placeholder="Optional context for a future research run" />
+          <input id="brief" name="brief" maxlength="1000" placeholder="Research scope, dates, and constraints (optional)" />
         </form>
         <div class="task-list">${renderTaskRows()}</div>
       </section>
@@ -143,7 +147,7 @@ function renderMessage(message) {
     <div class="chat-avatar">${escapeHTML(role?.short || message.agent_id.slice(0, 2).toUpperCase())}</div>
     <div class="chat-message-body">
       <div class="chat-message-head"><div>${speaker}<span class="chat-to">→ ${escapeHTML(message.recipient_id)}</span></div><time>${formatDateTime(message.created_at)}</time></div>
-      <div class="chat-message-meta"><span class="message-kind">${escapeHTML(message.kind)}</span><span>${escapeHTML(task?.title || 'Unknown task')}</span>${message.demo ? '<span class="demo-inline">Scripted demo</span>' : ''}</div>
+      <div class="chat-message-meta"><span class="message-kind">${escapeHTML(message.kind)}</span><span>${escapeHTML(task?.title || 'Unknown task')}</span>${message.demo ? '<span class="demo-inline">Scripted demo</span>' : '<span class="qa-inline">Real Claude draft · QA pending</span>'}</div>
       <p>${escapeHTML(message.summary)}</p>
       ${refs ? `<div class="chat-refs">${refs}</div>` : ''}
     </div>
@@ -157,9 +161,9 @@ function renderChats() {
   return `
     <section class="intro">
       <div><div class="eyebrow">SHARED WORKROOM / AUDITABLE HANDOFFS</div><h1>Agent chats</h1><p>See what each role passed to the next, across every task.</p></div>
-      <span class="demo-tag">SCRIPTED DEMO · 0 MODEL CALLS</span>
+      <span class="demo-tag">${data.mode === 'claude_pilot' ? 'MIXED FEED · REAL DRAFTS LABELED' : 'SCRIPTED DEMO · 0 MODEL CALLS'}</span>
     </section>
-    <div class="chat-explainer">These messages are generated by the demo workflow, not by live AI agents. They show concise work decisions and handoffs—not private model reasoning. <a href="${REPO}/blob/main/agents/PROTOCOL.md" target="_blank" rel="noopener noreferrer">How agent messages will work ↗</a></div>
+    <div class="chat-explainer">Scripted demo messages are labeled. Claude research drafts, when present, are real model output but unverified until an independent reviewer accepts them. The feed shows work, not hidden model reasoning. <a href="${REPO}/blob/main/agents/PROTOCOL.md" target="_blank" rel="noopener noreferrer">Agent message protocol ↗</a></div>
     <div class="chat-layout">
       <section class="panel chat-tasks" aria-label="Conversation tasks">
         <div class="panel-head"><div><div class="eyebrow">CONVERSATIONS</div><h2>Task threads</h2></div><span class="panel-counter">${data.messages.length} messages</span></div>
@@ -185,14 +189,15 @@ function renderUsage() {
   const byProvider = usageData?.summary?.byProvider || {};
   const byAgent = usageData?.summary?.byAgent || {};
   const connections = usageData?.connections || [];
+  const claudeConnection = connections.find((item) => item.provider === 'anthropic');
   const routes = usageData?.routes || [];
   const events = usageData?.events || [];
   return `
     <section class="intro">
       <div><div class="eyebrow">PROVIDER CONNECTIONS / MEASURED ACTIVITY</div><h1>Worker usage</h1><p>Token accounting for this workspace’s actual worker calls.</p></div>
-      <span class="demo-tag">NO SUBSCRIPTIONS CONNECTED</span>
+      <span class="demo-tag">${connections.some((item) => item.provider === 'anthropic' && item.status === 'online') ? 'LOCAL CLAUDE WORKER ONLINE' : 'NO WORKER ONLINE'}</span>
     </section>
-    <div class="usage-explainer">This page does not read your entire ChatGPT or Claude account. It records calls made by Northstar workers only; scripted demo chats never count as usage. Subscription balances and reset times must be checked with each provider. No OAuth credentials are stored in this browser.</div>
+    <div class="usage-explainer">This page does not read your entire ChatGPT or Claude account. It records completed Northstar worker calls only; scripted demo chats never count. Interrupted or failed calls may not report usage, so provider totals can be higher. Subscription balances and reset times must be checked with each provider. Claude Code login stays on your local machine.</div>
     ${usageError ? `<div class="alert" role="alert">${escapeHTML(usageError)}</div>` : ''}
     <section class="metrics" aria-label="Actual worker usage">
       <div class="metric accent"><span>Actual model calls</span><strong>${formatNumber(total.calls)}</strong><small>Demo handoffs excluded</small></div>
@@ -203,14 +208,21 @@ function renderUsage() {
     <section class="provider-section">
       <div class="section-heading"><div><div class="eyebrow">SUBSCRIPTION CONNECTIONS</div><h2>Providers</h2></div><div class="section-note">No auto-switching between accounts</div></div>
       <div class="provider-grid">${connections.map((item) => `<article class="panel provider-card">
-        <div class="provider-top"><span class="provider-icon">${item.worker === 'Codex' ? 'C' : 'A'}</span><span class="connection-pill">Not connected</span></div>
+        <div class="provider-top"><span class="provider-icon">${item.worker === 'Codex' ? 'C' : 'A'}</span><span class="connection-pill ${item.status === 'online' ? 'is-online' : ''}">${item.status === 'online' ? 'Local worker online' : item.status === 'paired_offline' ? 'Paired · offline' : 'Not connected'}</span></div>
         <h3>${escapeHTML(item.worker)}</h3><p>${escapeHTML(item.requirement)}</p>
         <div class="provider-stats"><span>${formatNumber(byProvider[item.provider]?.calls)} calls</span><span>${formatNumber(byProvider[item.provider]?.totalTokens)} tokens</span></div>
         <a href="${item.provider === 'openai' ? 'https://chatgpt.com/#settings/Usage' : 'https://claude.ai/settings/usage'}" target="_blank" rel="noopener noreferrer">Check provider usage ↗</a>
       </article>`).join('') || '<div class="empty">Loading provider status…</div>'}</div>
     </section>
+    <section class="panel pairing-panel">
+      <div class="panel-head"><div><div class="eyebrow">OWNER-OPERATED WORKER</div><h2>Connect Claude Code locally</h2></div><span class="panel-counter">No account token sent to Render</span></div>
+      <p>Claude Code must be signed in on your own computer. Pair this workspace, copy the one-time worker key, then start the worker from the repository’s <code>backend</code> folder. Keep the key private. Pairing again revokes the previous key.</p>
+      <button id="pair-worker" type="button">${['online', 'paired_offline'].includes(claudeConnection?.status) ? 'Rotate worker key' : 'Pair local Claude'}</button>${pairingKey ? '<button id="copy-worker-key" type="button">Copy one-time worker key</button>' : ''}<span class="pairing-note" role="status">${escapeHTML(pairingNote)}</span>
+      <pre>NORTHSTAR_WORKER_KEY="$(pbpaste)" npm run worker:claude</pre>
+      <small>The worker runs while this computer and command are running. It uses Claude Code subscription sign-in, web search/fetch only, a per-run budget and turn cap, and stops drafts at independent QA.</small>
+    </section>
     <section class="panel routing-panel">
-      <div class="panel-head"><div><div class="eyebrow">PLANNED ASSIGNMENTS</div><h2>Worker routing</h2></div><span class="panel-counter">Inactive until connected</span></div>
+      <div class="panel-head"><div><div class="eyebrow">ROLE ASSIGNMENTS</div><h2>Worker routing</h2></div><span class="panel-counter">${claudeConnection?.status === 'online' ? 'Claude research worker available' : 'Start local Claude to activate research'}</span></div>
       <div class="routing-table" role="table" aria-label="Planned worker routes">
         <div class="routing-row routing-head" role="row"><span>Agent</span><span>Worker / purpose</span><span>Calls</span><span>Input</span><span>Output</span><span>Cached</span></div>
         ${routes.map((route) => `<div class="routing-row" role="row"><span><a href="${skillURL(route.agent)}" target="_blank" rel="noopener noreferrer">${escapeHTML(route.agent)} ↗</a></span><span>${escapeHTML(route.worker)}<small>${escapeHTML(route.reason)}</small></span><span>${formatNumber(byAgent[route.agent]?.calls)}</span><span>${formatNumber(byAgent[route.agent]?.inputTokens)}</span><span>${formatNumber(byAgent[route.agent]?.outputTokens)}</span><span>${formatNumber(byAgent[route.agent]?.cachedInputTokens)}</span></div>`).join('')}
@@ -223,7 +235,7 @@ function renderUsage() {
 }
 
 function signature() {
-  return JSON.stringify([data.tasks, data.events, data.messages, data.database, data.modelCalls, data.inputTokens, data.outputTokens, usageData, usageError, connection, error, selectedTask, chatTask, chatAgent, currentView(), busy]);
+  return JSON.stringify([data.tasks, data.events, data.messages, data.database, data.mode, usageData, usageError, pairingNote, connection, error, selectedTask, chatTask, chatAgent, currentView(), busy]);
 }
 
 function render() {
@@ -253,8 +265,8 @@ function render() {
         </nav>
         <div class="side-bottom">
           <div class="side-label">CURRENT MODE</div>
-          <div class="mode-card"><span class="mode-orb"></span><div><strong>Workflow demo</strong><small>Zero AI requests</small></div></div>
-          <p>Sample tasks show scripted handoffs. Real research agents are not connected.</p>
+          <div class="mode-card"><span class="mode-orb"></span><div><strong>${data.mode === 'claude_pilot' ? 'Claude pilot' : 'Workflow demo'}</strong><small>${formatNumber(usageData?.summary?.total?.calls)} actual AI requests</small></div></div>
+          <p>${data.mode === 'claude_pilot' ? 'Claude research drafts require independent QA before acceptance.' : 'Sample tasks show scripted handoffs. Start the local Claude worker for real drafts.'}</p>
           <a class="repo-link" href="${REPO}" target="_blank" rel="noopener noreferrer">View GitHub repository ↗</a>
         </div>
       </aside>
@@ -266,7 +278,7 @@ function render() {
         <div class="content">
           ${error ? `<div class="alert" role="alert">${escapeHTML(error)} <span>Backend: ${escapeHTML(API)}</span></div>` : ''}
           ${view === 'chats' ? renderChats() : view === 'usage' ? renderUsage() : renderOverview()}
-          <footer>Northstar Lab · Workflow preview · ${data.database === 'postgres' ? 'PostgreSQL-backed demo history' : 'Temporary demo history'} · <a href="${REPO}" target="_blank" rel="noopener noreferrer">Source on GitHub ↗</a></footer>
+          <footer>Northstar Lab · Research workflow pilot · ${data.database === 'postgres' ? 'PostgreSQL history' : 'Temporary history'} · <a href="${REPO}" target="_blank" rel="noopener noreferrer">Source on GitHub ↗</a></footer>
         </div>
       </main>
     </div>`;
@@ -274,6 +286,22 @@ function render() {
   document.querySelector('#task-form')?.addEventListener('submit', create);
   document.querySelectorAll('[data-select]').forEach((button) => button.addEventListener('click', () => { selectedTask = button.dataset.select; render(); }));
   document.querySelectorAll('[data-run]').forEach((button) => button.addEventListener('click', () => run(button.dataset.run)));
+  document.querySelectorAll('[data-run-claude]').forEach((button) => button.addEventListener('click', () => runClaude(button.dataset.runClaude)));
+  document.querySelector('#pair-worker')?.addEventListener('click', async () => {
+    if (['online', 'paired_offline'].includes(usageData?.connections?.find((item) => item.provider === 'anthropic')?.status) && !window.confirm('This will revoke the existing local Claude worker key. Continue?')) return;
+    try {
+      const result = await request('/api/worker/claude/pair', { method: 'POST' });
+      pairingKey = result.worker_key;
+      pairingNote = 'Key created. Copy it now; it is not saved in this browser.';
+      await refreshUsage();
+    } catch (cause) { pairingNote = `Pairing failed: ${cause.message}`; }
+    render();
+  });
+  document.querySelector('#copy-worker-key')?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(pairingKey); pairingNote = 'Copied. Paste only into your local Terminal command.'; }
+    catch { pairingNote = 'Clipboard access failed. Retry in a secure browser context.'; }
+    render();
+  });
   document.querySelectorAll('[data-chat-task]').forEach((button) => button.addEventListener('click', () => { chatTask = button.dataset.chatTask; resetChatScroll = true; render(); }));
   document.querySelector('#chat-agent-filter')?.addEventListener('change', (event) => { chatAgent = event.target.value; resetChatScroll = true; render(); });
   if (draft && document.querySelector('#title')) {
@@ -343,6 +371,21 @@ async function run(id) {
   busy = true;
   try {
     await request(`/api/tasks/${id}/start`, { method: 'POST' });
+    selectedTask = id;
+    error = '';
+    await refresh();
+  } catch (cause) {
+    error = cause.message;
+  } finally {
+    busy = false;
+    render();
+  }
+}
+
+async function runClaude(id) {
+  busy = true;
+  try {
+    await request(`/api/tasks/${id}/start-claude`, { method: 'POST' });
     selectedTask = id;
     error = '';
     await refresh();

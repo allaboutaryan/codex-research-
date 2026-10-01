@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "worker:claude": "node claude-worker.js"
   },
   "dependencies": {
     "pg": "^8.16.3"

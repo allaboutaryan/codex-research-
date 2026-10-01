@@ -15,6 +15,7 @@
 .provider-top { display: flex; justify-content: space-between; align-items: center; }
 .provider-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; color: #b7e66d; background: #26392a; font: 700 17px 'Space Grotesk', sans-serif; }
 .connection-pill { border: 1px solid #705d48; color: #eac89a; background: #eac89a12; border-radius: 5px; padding: 6px 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.connection-pill.is-online { border-color: #6d8952; color: #b7e66d; background: #b7e66d16; }
 .provider-card h3 { margin: 18px 0 6px; font: 600 19px 'Space Grotesk', sans-serif; }
 .provider-card p { color: #91a4aa; font-size: 12px; line-height: 1.5; margin: 0; min-height: 36px; }
 .provider-stats { display: flex; gap: 18px; border-top: 1px solid #2a3942; padding-top: 13px; margin-top: 17px; color: #b6c7bd; font-size: 12px; }
@@ -28,6 +29,21 @@
 .routing-head { color: #788f99; font-size: 10px; text-transform: uppercase; letter-spacing: .1em; border-top: 0; }
 .routing-row span:nth-child(n+3) { text-align: right; }
 .usage-history { min-height: 180px; }
+.pairing-panel { min-height: 0; margin-bottom: 22px; }
+.pairing-panel p, .pairing-panel small { color: #91a4aa; font-size: 12px; line-height: 1.55; }
+.pairing-panel p { margin: 0 0 16px; }
+.pairing-panel button { border: 0; border-radius: 6px; background: #b7e66d; color: #162014; font-size: 12px; font-weight: 700; padding: 10px 13px; }
+.pairing-panel button + button { margin-left: 8px; background: #22382c; color: #c2e995; border: 1px solid #6d8952; }
+.pairing-panel pre { overflow-x: auto; background: #0e1821; border: 1px solid #2b3b45; color: #d9e8d6; border-radius: 7px; padding: 13px; font-size: 12px; }
+.pairing-panel small { display: block; }
+.pairing-note { color: #b7e66d; font-size: 12px; margin-left: 12px; }
+.pill.claude_queued { color: #ddc895; background: #ddc8951b; }
+.pill.claude_running { color: #b7e66d; background: #b7e66d22; }
+.pill.awaiting_review { color: #91b4da; background: #7192b722; }
+.pill.claude_failed { color: #e8a99f; background: #a75b5229; }
+.run-btn.claude-run { background: #243722; border-color: #8faf5b; }
+.qa-inline { border-radius: 4px; padding: 3px 5px; color: #b7e66d; background: #b7e66d16; font-size: 10px; }
+.chat-message p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .usage-events { display: grid; }
 .usage-event { display: flex; justify-content: space-between; gap: 15px; border-top: 1px solid #273640; padding: 13px 0; font-size: 12px; }
 .usage-event strong, .usage-event span, .usage-event small { display: block; }

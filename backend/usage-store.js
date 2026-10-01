@@ -35,12 +35,16 @@ export async function recordUsage(pool, memory, workspace, entry) {
 export async function readUsage(pool, memory, workspace) {
   let aggregates;
   let events;
+  let claudeSeenAt;
+  let claudePaired;
   if (!pool) {
     const all = memory.get(workspace)?.usage || [];
     aggregates = all;
     events = [...all].reverse().slice(0, 100);
+    claudeSeenAt = memory.get(workspace)?.claude_worker_seen_at;
+    claudePaired = Boolean(memory.get(workspace)?.claude_worker_key_hash);
   } else {
-    const [grouped, recent] = await Promise.all([
+    const [grouped, recent, presence] = await Promise.all([
       pool.query(`
         SELECT provider, agent_id, count(*)::integer AS calls,
           coalesce(sum(input_tokens), 0)::text AS input_tokens,
@@ -57,14 +61,20 @@ export async function readUsage(pool, memory, workspace) {
           cached_input_tokens, cache_write_tokens, reasoning_output_tokens, cost_usd, created_at
         FROM usage_events WHERE workspace_id = $1 ORDER BY id DESC LIMIT 100
       `, [workspace]),
+      pool.query('SELECT last_seen_at, worker_key_hash FROM claude_worker_presence WHERE workspace_id = $1', [workspace]),
     ]);
     aggregates = grouped.rows;
     events = recent.rows;
+    claudeSeenAt = presence.rows[0]?.last_seen_at;
+    claudePaired = Boolean(presence.rows[0]?.worker_key_hash);
   }
+  const claudeOnline = claudeSeenAt && Date.now() - new Date(claudeSeenAt).getTime() < 60_000;
   return {
     scope: 'this_workspace_worker_calls_only',
-    mode: 'subscription_oauth_planned',
-    connections: providerConnections,
+    mode: claudePaired ? 'local_claude_pilot' : 'subscription_oauth_planned',
+    connections: providerConnections.map((connection) => connection.provider !== 'anthropic' ? connection : claudeOnline
+      ? { ...connection, status: 'online', requirement: 'Owner-operated Claude Code worker is online; subscription credentials remain local.' }
+      : claudePaired ? { ...connection, status: 'paired_offline', requirement: 'Paired, but the local Claude Code worker is offline.' } : connection),
     routes: workerRoutes,
     summary: summarizeUsage(aggregates),
     events,
