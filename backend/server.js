@@ -5,6 +5,7 @@ import { readUsage } from './usage-store.js';
 import { claimClaudeTask, completeClaudeTask, failClaudeTask, heartbeatClaudeWorker, pairClaudeWorker, queueClaudeTask, workspaceForWorkerKey } from './claude-jobs.js';
 import { buildChatContext, claimClaudeChat, completeClaudeChat, defaultMission, failClaudeChat, queueClaudeChat, readProjectContext, saveProjectContext } from './claude-chat.js';
 import { claimClaudeReview, completeClaudeReview, decideReview, failClaudeReview, queueClaudeReview } from './claude-review.js';
+import { deriveAlerts, readDailyReports, reportTick } from './reports.js';
 
 const port = Number(process.env.PORT ?? 8787);
 const pool = process.env.DATABASE_URL ? new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 4 }) : null;
@@ -131,6 +132,20 @@ async function init() {
       created_at timestamptz NOT NULL DEFAULT now()
     );
     ALTER TABLE claude_chat_jobs ADD COLUMN IF NOT EXISTS agent_id text NOT NULL DEFAULT 'Research worker';
+    CREATE TABLE IF NOT EXISTS daily_reports (
+      workspace_id text NOT NULL REFERENCES workspaces(id),
+      report_date date NOT NULL,
+      body jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (workspace_id, report_date)
+    );
+    CREATE TABLE IF NOT EXISTS telegram_deliveries (
+      workspace_id text NOT NULL REFERENCES workspaces(id),
+      delivery_key text NOT NULL,
+      last_attempt_at timestamptz NOT NULL,
+      sent_at timestamptz,
+      PRIMARY KEY (workspace_id, delivery_key)
+    );
     CREATE INDEX IF NOT EXISTS idx_claude_chat_workspace_created ON claude_chat_jobs(workspace_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_tasks_workspace_created ON tasks(workspace_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_events_workspace_id ON events(workspace_id, id DESC);
@@ -155,9 +170,9 @@ async function readState(workspace) {
     const state = memory.get(workspace);
     const reviewPackets = {};
     for (const message of state.messages) {
-      if (message.demo || !['finding', 'review'].includes(message.kind)) continue;
-      reviewPackets[message.task_id] ||= { draft: null, review: null };
-      reviewPackets[message.task_id][message.kind === 'finding' ? 'draft' : 'review'] = message;
+      if (message.demo || !['finding', 'review', 'blocker'].includes(message.kind)) continue;
+      reviewPackets[message.task_id] ||= { draft: null, review: null, blocker: null };
+      reviewPackets[message.task_id][message.kind === 'finding' ? 'draft' : message.kind] = message;
     }
     for (const packet of Object.values(reviewPackets)) if (packet.review && (!packet.draft || Number(packet.review.id) < Number(packet.draft.id))) packet.review = null;
     return { tasks: [...state.tasks].reverse().map(({ claude_lease_token, claude_lease_expires_at, review_lease_token, review_lease_expires_at, ...task }) => task), events: [...state.events].reverse().slice(0, 50), messages: [...state.messages].reverse().slice(0, 200), reviewPackets, chatJobs: [...state.chatJobs].reverse().slice(0, 30).map(({ lease_token, lease_expires_at, question, ...job }) => job) };
@@ -168,13 +183,13 @@ async function readState(workspace) {
     pool.query('SELECT * FROM agent_messages WHERE workspace_id = $1 ORDER BY id DESC LIMIT 200', [workspace]),
     pool.query('SELECT id, task_id, agent_id, status, created_at FROM claude_chat_jobs WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 30', [workspace]),
     pool.query(`SELECT DISTINCT ON (task_id, kind) id, task_id, kind, agent_id, summary, evidence_refs, created_at
-      FROM agent_messages WHERE workspace_id = $1 AND demo = false AND kind IN ('finding', 'review')
+      FROM agent_messages WHERE workspace_id = $1 AND demo = false AND kind IN ('finding', 'review', 'blocker')
       ORDER BY task_id, kind, id DESC`, [workspace]),
   ]);
   const reviewPackets = {};
   for (const message of packets.rows) {
-    reviewPackets[message.task_id] ||= { draft: null, review: null };
-    reviewPackets[message.task_id][message.kind === 'finding' ? 'draft' : 'review'] = message;
+    reviewPackets[message.task_id] ||= { draft: null, review: null, blocker: null };
+    reviewPackets[message.task_id][message.kind === 'finding' ? 'draft' : message.kind] = message;
   }
   for (const packet of Object.values(reviewPackets)) if (packet.review && (!packet.draft || Number(packet.review.id) < Number(packet.draft.id))) packet.review = null;
   return { tasks: tasks.rows, events: events.rows, messages: messages.rows, reviewPackets, chatJobs: chatJobs.rows };
@@ -287,7 +302,10 @@ async function advance() {
 const server = http.createServer(async (request, response) => {
   if (request.method === 'OPTIONS') return send(response, 204, {});
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
-  if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/health') return send(response, 200, { ok: true, database: pool ? 'postgres' : 'memory', mode: 'demo' });
+  if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/health') {
+    triggerReports();
+    return send(response, 200, { ok: true, database: pool ? 'postgres' : 'memory', mode: 'demo' });
+  }
   try {
     const workerCall = url.pathname.startsWith('/api/worker/claude/') && url.pathname !== '/api/worker/claude/pair';
     const workspace = workerCall
@@ -296,11 +314,24 @@ const server = http.createServer(async (request, response) => {
     if (!workspace) return send(response, 401, { error: workerCall ? 'A valid worker key is required' : 'A workspace key is required' });
     if (request.method === 'GET' && url.pathname === '/api/state') {
       const state = await readState(workspace);
-      return send(response, 200, { ...state, mode: state.chatJobs.length || state.tasks.some((task) => task.status.startsWith('claude_') || task.status.startsWith('review_') || task.status === 'awaiting_review' || task.status === 'approved') ? 'claude_pilot' : 'demo', database: pool ? 'postgres' : 'memory', maxTasks: 20 });
+      return send(response, 200, { ...state, mode: state.chatJobs.length || state.tasks.some((task) => task.status.startsWith('claude_') || task.status.startsWith('review_') || ['research_blocked', 'awaiting_review', 'approved'].includes(task.status)) ? 'claude_pilot' : 'demo', database: pool ? 'postgres' : 'memory', maxTasks: 20 });
     }
     if (request.method === 'GET' && url.pathname === '/api/usage') {
       await ensureWorkspace(workspace);
       return send(response, 200, await readUsage(pool, memory, workspace));
+    }
+    if (request.method === 'GET' && url.pathname === '/api/reports') {
+      await ensureWorkspace(workspace);
+      const state = await readState(workspace);
+      const seen = pool ? (await pool.query('SELECT last_seen_at FROM claude_worker_presence WHERE workspace_id = $1', [workspace])).rows[0]?.last_seen_at
+        : memory.get(workspace)?.claude_worker_seen_at;
+      return send(response, 200, {
+        alerts: deriveAlerts(state.tasks, seen, state.reviewPackets),
+        reports: await readDailyReports(pool, memory, workspace),
+        schedule: '18:00 Asia/Kolkata',
+        delivery: process.env.NORTHSTAR_TELEGRAM_WORKSPACE_ID === workspace && process.env.NORTHSTAR_TELEGRAM_BOT_TOKEN && process.env.NORTHSTAR_TELEGRAM_CHAT_ID ? 'configured' : 'not_configured',
+        workspace_id: workspace,
+      });
     }
     if (request.method === 'GET' && url.pathname === '/api/context') {
       await ensureWorkspace(workspace);
@@ -410,3 +441,12 @@ const server = http.createServer(async (request, response) => {
 await init();
 server.listen(port, '0.0.0.0', () => console.log(`Northstar Lab API listening on ${server.address().port}`));
 setInterval(() => advance().catch((error) => console.error('Worker failed:', error)), 750).unref();
+let reportsRunning = false;
+function triggerReports() {
+  if (reportsRunning) return;
+  reportsRunning = true;
+  reportTick(pool, memory, readState).catch((error) => console.error('Reporting check failed:', error.message))
+    .finally(() => { reportsRunning = false; });
+}
+setInterval(triggerReports, 60_000).unref();
+triggerReports();

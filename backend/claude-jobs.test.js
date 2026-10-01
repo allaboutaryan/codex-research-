@@ -40,6 +40,20 @@ test('pairing rotation revokes the old worker key', async () => {
   assert.equal(await workspaceForWorkerKey(null, memory, newKey), 'owner');
 });
 
+test('source-free research stops before QA and can be retried', async () => {
+  const memory = workspace();
+  await queueClaudeTask(null, memory, 'owner', taskId);
+  const claimed = await claimClaudeTask(null, memory, 'owner');
+  assert.equal(await completeClaudeTask(null, memory, 'owner', taskId, {
+    lease_token: claimed.lease_token, summary: 'Web research was unavailable, so I cannot cite a source or make a supported finding.',
+    model: 'claude-sonnet-test', request_id: 'source-free-result-1', evidence_refs: [],
+    usage: { input_tokens: 10, output_tokens: 10, cached_input_tokens: 0, cache_write_tokens: 0, reasoning_output_tokens: 0 },
+  }), true);
+  assert.equal(memory.get('owner').tasks[0].status, 'research_blocked');
+  assert.equal(memory.get('owner').messages[0].kind, 'blocker');
+  assert.equal(await queueClaudeTask(null, memory, 'owner', taskId), true);
+});
+
 test('wrong lease cannot submit or fail a task', async () => {
   const memory = workspace();
   await queueClaudeTask(null, memory, 'owner', taskId);

@@ -31,7 +31,7 @@ test('browser and local Claude worker have separate permissions', async (context
   assert.equal(claimed.task.id, task.id);
   const complete = await worker(`/api/worker/claude/${task.id}/complete`, { method: 'POST', body: JSON.stringify({
     lease_token: claimed.task.lease_token, summary: 'Official source checked; finding is tentative and awaits independent QA.',
-    model: 'claude-test', request_id: '22222222-2222-4222-8222-222222222222', evidence_refs: [],
+    model: 'claude-test', request_id: '22222222-2222-4222-8222-222222222222', evidence_refs: ['https://example.org/source'],
     usage: { input_tokens: 20, output_tokens: 10, cached_input_tokens: 0, cache_write_tokens: 0, reasoning_output_tokens: 0 },
   }) });
   assert.equal(complete.status, 200);
@@ -39,6 +39,12 @@ test('browser and local Claude worker have separate permissions', async (context
   assert.equal(state.tasks[0].status, 'review_queued');
   assert.equal(state.messages[0].demo, false);
   assert.equal('claude_lease_token' in state.tasks[0], false);
+  const reports = await (await browser('/api/reports')).json();
+  assert.deepEqual(reports.alerts, []);
+  assert.deepEqual(reports.reports, []);
+  assert.match(reports.workspace_id, /^[a-f0-9]{64}$/);
+  assert.equal(reports.delivery, 'not_configured');
+  assert.equal((await worker('/api/reports')).status, 401);
   const usage = await (await browser('/api/usage')).json();
   assert.equal(usage.summary.total.totalTokens, 30);
   assert.equal(usage.connections.find((item) => item.provider === 'anthropic').status, 'online');

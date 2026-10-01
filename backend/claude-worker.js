@@ -113,6 +113,7 @@ export async function invokeClaude(task, { binary = 'claude', timeoutMs = maxRun
   const chat = mode === 'chat' || mode === 'review_chat';
   const review = mode === 'review';
   const args = ['-p', '--safe-mode', '--restricted', '--no-chrome', '--tools', 'WebSearch,WebFetch',
+    '--allowedTools', 'WebSearch', 'WebFetch', '--permission-mode', 'dontAsk',
     '--disallowedTools', 'mcp__*', '--no-session-persistence', '--model', 'sonnet',
     '--max-turns', chat ? '3' : '4', '--max-budget-usd', chat ? '0.30' : '0.50', '--output-format', 'json',
     '--system-prompt', mode === 'review_chat' ? reviewerChatSystemPrompt : chat ? chatSystemPrompt : review ? reviewSystemPrompt : systemPrompt];

@@ -16,7 +16,7 @@ export async function queueClaudeReview(pool, memory, workspace, id) {
   if (!pool) {
     const state = memory.get(workspace);
     const task = state?.tasks.find((item) => item.id === id && ['awaiting_review', 'review_failed'].includes(item.status));
-    if (!task || !state.messages.some((message) => message.task_id === id && message.kind === 'finding' && !message.demo)) return false;
+    if (!task || !state.messages.some((message) => message.task_id === id && message.kind === 'finding' && !message.demo && message.evidence_refs?.length)) return false;
     Object.assign(task, { status: 'review_queued', review_attempts: 0, review_lease_token: null, review_lease_expires_at: null, updated_at: now() });
     state.events.push({ id: state.nextId++, workspace_id: workspace, task_id: id, role: 'System', message: 'Separate Claude QA pass queued. Owner approval will still be required.', created_at: now() });
     return true;
@@ -27,7 +27,7 @@ export async function queueClaudeReview(pool, memory, workspace, id) {
     const result = await client.query(`UPDATE tasks SET status = 'review_queued', review_attempts = 0,
       review_lease_token = NULL, review_lease_expires_at = NULL, updated_at = now()
       WHERE id = $1 AND workspace_id = $2 AND status IN ('awaiting_review', 'review_failed')
-      AND EXISTS (SELECT 1 FROM agent_messages WHERE task_id = $1 AND workspace_id = $2 AND kind = 'finding' AND demo = false)
+      AND EXISTS (SELECT 1 FROM agent_messages WHERE task_id = $1 AND workspace_id = $2 AND kind = 'finding' AND demo = false AND jsonb_array_length(evidence_refs) > 0)
       RETURNING id`, [id, workspace]);
     if (!result.rowCount) { await client.query('ROLLBACK'); return false; }
     await client.query('INSERT INTO events (workspace_id, task_id, role, message) VALUES ($1, $2, $3, $4)',

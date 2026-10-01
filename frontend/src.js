@@ -2,6 +2,7 @@ import './style.css';
 import './chats.css';
 import './usage.css';
 import './ux.css';
+import './reports.css';
 
 const API = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
 const REPO = 'https://github.com/allaboutaryan/codex-research-';
@@ -23,6 +24,7 @@ const roles = [
 
 let data = { tasks: [], events: [], messages: [], modelCalls: 0, inputTokens: 0, outputTokens: 0, database: 'memory' };
 let usageData = null;
+let reportData = null;
 let contextData = null;
 let contextNote = '';
 let usageError = '';
@@ -43,7 +45,7 @@ let connection = 'connecting';
 let lastRenderedSignature = '';
 
 const escapeHTML = (value) => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
-const currentView = () => location.hash === '#chats' ? 'chats' : location.hash === '#usage' ? 'usage' : location.hash === '#approvals' ? 'approvals' : 'overview';
+const currentView = () => location.hash === '#chats' ? 'chats' : location.hash === '#usage' ? 'usage' : location.hash === '#approvals' ? 'approvals' : location.hash === '#reports' ? 'reports' : 'overview';
 const formatNumber = (value) => Number(value || 0).toLocaleString();
 const skillURL = (role) => {
   const skill = roles.find((item) => item.label === role)?.skill;
@@ -79,11 +81,15 @@ function activeRole(step) {
 }
 
 function renderTaskRows() {
-  const label = (status) => ({ queued: 'Queued', running: 'Demo running', complete: 'Demo complete', claude_queued: 'Claude queued', claude_running: 'Claude working', awaiting_review: 'Awaiting QA', claude_failed: 'Claude failed', review_queued: 'QA queued', review_running: 'QA checking', review_failed: 'QA failed', review_accepted: 'Your approval needed', review_revision: 'Needs revision', review_blocked: 'QA blocked', approved: 'Approved' })[status] || status;
-  return data.tasks.length ? data.tasks.map((task) => `<div class="task-row ${task.id === selectedTask ? 'selected' : ''}" data-task="${escapeHTML(task.id)}">
+  const label = (status) => ({ queued: 'Queued', running: 'Demo running', complete: 'Demo complete', claude_queued: 'Claude queued', claude_running: 'Claude working', awaiting_review: 'Awaiting QA', claude_failed: 'Claude failed', research_blocked: 'Research blocked', review_queued: 'QA queued', review_running: 'QA checking', review_failed: 'QA failed', review_accepted: 'Your approval needed', review_revision: 'Needs revision', review_blocked: 'QA blocked', approved: 'Approved' })[status] || status;
+  return data.tasks.length ? data.tasks.map((task) => {
+    const hasCitedDraft = Boolean(data.reviewPackets?.[task.id]?.draft?.evidence_refs?.length);
+    const retryResearch = ['queued', 'claude_failed', 'research_blocked', 'review_revision', 'review_blocked'].includes(task.status) || (task.status === 'awaiting_review' && !hasCitedDraft);
+    const canReview = ['awaiting_review', 'review_failed'].includes(task.status) && hasCitedDraft;
+    return `<div class="task-row ${task.id === selectedTask ? 'selected' : ''}" data-task="${escapeHTML(task.id)}">
     <button class="task-select" type="button" data-select="${escapeHTML(task.id)}"><span class="task-title">${escapeHTML(task.title)}</span><span class="task-meta">${escapeHTML(task.brief || 'No extra context')} · ${formatTime(task.created_at)}</span></button>
-    <div class="task-end"><span class="pill ${escapeHTML(task.status)}">${escapeHTML(label(task.status))}</span>${task.status === 'queued' ? `<button class="run-btn demo-run" type="button" data-run="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''} title="Scripted walkthrough; no AI call">Preview demo</button>` : ''}${['queued', 'claude_failed', 'review_revision', 'review_blocked'].includes(task.status) ? `<button class="run-btn claude-run" type="button" data-run-claude="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''} title="Queues work for your local Claude worker">${['review_revision', 'review_blocked'].includes(task.status) ? 'Revise draft' : task.status === 'claude_failed' ? 'Retry Claude' : 'Queue for Claude'}</button>` : ''}${['awaiting_review', 'review_failed'].includes(task.status) ? `<button class="run-btn qa-run" type="button" data-run-review="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>${task.status === 'review_failed' ? 'Retry QA' : 'Run QA'}</button>` : ''}${task.status === 'review_accepted' ? '<a class="task-chat-link" href="#approvals">Review decision →</a>' : ''}</div>
-  </div>`).join('') : '<div class="empty">Add a task to see its handoffs here.</div>';
+    <div class="task-end"><span class="pill ${escapeHTML(task.status)}">${escapeHTML(label(task.status))}</span>${task.status === 'queued' ? `<button class="run-btn demo-run" type="button" data-run="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''} title="Scripted walkthrough; no AI call">Preview demo</button>` : ''}${retryResearch ? `<button class="run-btn claude-run" type="button" data-run-claude="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''} title="Queues work for your local Claude worker">${task.status === 'queued' ? 'Queue for Claude' : 'Retry research'}</button>` : ''}${canReview ? `<button class="run-btn qa-run" type="button" data-run-review="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>${task.status === 'review_failed' ? 'Retry QA' : 'Run QA'}</button>` : ''}${task.status === 'review_accepted' ? '<a class="task-chat-link" href="#approvals">Review decision →</a>' : ''}</div>
+  </div>`; }).join('') : '<div class="empty">Add a task to see its handoffs here.</div>';
 }
 
 function renderOverview() {
@@ -105,9 +111,11 @@ function renderOverview() {
         ? { title: 'Create a focused assignment', detail: 'Give Claude one clear research question and any scope or date constraints.', href: '#tasks', action: 'Add a task' }
         : approvalCount
           ? { title: 'Review a QA-accepted draft', detail: 'The reviewer completed a separate source check. Read its verdict before deciding.', href: '#approvals', action: 'Open approval inbox' }
+          : data.tasks.some((task) => task.status === 'research_blocked' || (task.status === 'awaiting_review' && !data.reviewPackets?.[task.id]?.draft?.evidence_refs?.length))
+            ? { title: 'Research needs attention', detail: 'A run stopped without sources. Check its blocker, clarify the question, then retry.', href: '#approvals', action: 'See blocked research' }
           : data.tasks.some((task) => task.status === 'awaiting_review' || task.status === 'review_failed')
             ? { title: 'Run the QA pass', detail: 'A research draft is ready for a separate Claude source-checking pass.', href: '#approvals', action: 'Open review queue' }
-        : data.tasks.some((task) => ['queued', 'claude_failed', 'review_revision', 'review_blocked'].includes(task.status))
+        : data.tasks.some((task) => ['queued', 'claude_failed', 'research_blocked', 'review_revision', 'review_blocked'].includes(task.status))
           ? { title: 'Queue a task for Claude', detail: 'A task is ready. Select Queue for Claude to start real research.', href: '#tasks', action: 'Open task queue' }
           : { title: 'Ask about the work', detail: 'Read task handoffs and ask the Research worker a question.', href: '#chats', action: 'Open agent chats' };
 
@@ -246,7 +254,7 @@ function renderChats() {
 }
 
 function renderApprovals() {
-  const reviewable = data.tasks.filter((task) => ['awaiting_review', 'review_failed', 'review_queued', 'review_running', 'review_accepted', 'review_revision', 'review_blocked', 'approved'].includes(task.status));
+  const reviewable = data.tasks.filter((task) => ['research_blocked', 'awaiting_review', 'review_failed', 'review_queued', 'review_running', 'review_accepted', 'review_revision', 'review_blocked', 'approved'].includes(task.status));
   const needsOwner = reviewable.filter((task) => task.status === 'review_accepted').length;
   return `
     <section class="intro">
@@ -260,22 +268,26 @@ function renderApprovals() {
         const draft = data.reviewPackets?.[task.id]?.draft || recent.find((message) => message.kind === 'finding');
         const latestReview = data.reviewPackets?.[task.id]?.review || recent.find((message) => message.kind === 'review');
         const review = latestReview && draft && Number(latestReview.id) > Number(draft.id) ? latestReview : null;
+        const blocker = data.reviewPackets?.[task.id]?.blocker || recent.find((message) => message.kind === 'blocker' && message.agent_id === 'Research worker');
+        const cited = Boolean(draft?.evidence_refs?.length);
         const verdict = task.status === 'review_accepted' ? 'QA accepted · your decision needed'
           : task.status === 'approved' ? 'Owner approved'
             : task.status === 'review_revision' ? 'Revision requested'
               : task.status === 'review_blocked' ? 'QA blocked'
                 : task.status === 'review_running' ? 'QA checking sources'
                   : task.status === 'review_queued' ? 'QA queued'
-                    : task.status === 'review_failed' ? 'QA failed · retry available' : 'Draft awaiting QA';
+                    : task.status === 'review_failed' ? 'QA failed · retry available'
+                      : task.status === 'research_blocked' || !cited ? 'Research blocked · no sources' : 'Draft awaiting QA';
         return `<article class="panel approval-card">
           <div class="panel-head"><div><div class="eyebrow">TASK ${escapeHTML(task.id.slice(0, 8))}</div><h2>${escapeHTML(task.title)}</h2></div><span class="pill ${escapeHTML(task.status)}">${escapeHTML(verdict)}</span></div>
           <p class="approval-brief">${escapeHTML(task.brief || 'No additional task brief.')}</p>
           <div class="approval-columns">
-            <div class="approval-document"><h3>Research draft</h3>${draft ? `<p>${escapeHTML(draft.summary)}</p><div class="chat-refs">${renderRefs(draft.evidence_refs, 'Draft source')}</div>` : '<p>No real research draft is available.</p>'}</div>
+            <div class="approval-document"><h3>${task.status === 'research_blocked' ? 'Why research stopped' : 'Research draft'}</h3>${task.status === 'research_blocked' && blocker ? `<p>${escapeHTML(blocker.summary)}</p>` : draft ? `<p>${escapeHTML(draft.summary)}</p><div class="chat-refs">${renderRefs(draft.evidence_refs, 'Draft source')}</div>` : '<p>No cited research draft is available.</p>'}</div>
             <div class="approval-document"><h3>QA verdict</h3>${review ? `<p>${escapeHTML(review.summary)}</p><div class="chat-refs">${renderRefs(review.evidence_refs, 'Checked source')}</div>` : '<p>No reviewer verdict yet.</p>'}</div>
           </div>
           <div class="approval-actions">
-            ${['awaiting_review', 'review_failed'].includes(task.status) ? `<button class="run-btn qa-run" type="button" data-run-review="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>${task.status === 'review_failed' ? 'Retry QA' : 'Run separate QA'}</button>` : ''}
+            ${['awaiting_review', 'review_failed'].includes(task.status) && cited ? `<button class="run-btn qa-run" type="button" data-run-review="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>${task.status === 'review_failed' ? 'Retry QA' : 'Run separate QA'}</button>` : ''}
+            ${(task.status === 'research_blocked' || (task.status === 'awaiting_review' && !cited)) ? `<button class="run-btn claude-run" type="button" data-run-claude="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>Retry research</button><span class="approval-hint">Clarify the task if needed; QA cannot run without a source.</span>` : ''}
             ${['review_revision', 'review_blocked'].includes(task.status) ? `<button class="run-btn claude-run" type="button" data-run-claude="${escapeHTML(task.id)}" ${busy ? 'disabled' : ''}>Queue revised research</button>` : ''}
             ${task.status === 'review_accepted' && draft && review ? `<form class="owner-decision" data-decision-task="${escapeHTML(task.id)}"><label for="decision-note-${escapeHTML(task.id)}">Your note or revision request</label><textarea id="decision-note-${escapeHTML(task.id)}" maxlength="1000" placeholder="Why are you approving, or what must be corrected?"></textarea><div><button class="run-btn approve-btn" type="submit" name="decision" value="approve" ${busy ? 'disabled' : ''}>Approve research</button><button class="run-btn revision-btn" type="submit" name="decision" value="revise" ${busy ? 'disabled' : ''}>Request revision</button></div></form>` : ''}
             <button class="task-chat-link approval-chat-link" type="button" data-open-thread="${escapeHTML(task.id)}">Open task conversation →</button>
@@ -342,8 +354,34 @@ function renderUsage() {
     </section>`;
 }
 
+function renderReports() {
+  const alerts = reportData?.alerts || [];
+  const reports = reportData?.reports || [];
+  const latest = reports[0];
+  return `<section class="intro">
+    <div><div class="eyebrow">OPERATIONS / REAL ACTIVITY ONLY</div><h1>Alerts &amp; reports</h1><p>See what needs you, and review the daily activity summary at 6:00 PM India time.</p></div>
+    <span class="demo-tag">${alerts.length} OPEN ALERT${alerts.length === 1 ? '' : 'S'}</span>
+  </section>
+  <section class="panel report-delivery">
+    <div><div class="eyebrow">DELIVERY</div><h2>Telegram ${reportData?.delivery === 'configured' ? 'configured' : 'not connected yet'}</h2>
+    <p>Dashboard alerts work now. Telegram delivery needs your private bot token, chat ID, and workspace ID in Render. The bot will send stuck alerts and the 6:00 PM report when configured. Timing on the free server is best-effort.</p></div>
+    <button id="copy-workspace-id" type="button" ${reportData?.workspace_id ? '' : 'disabled'}>Copy workspace ID</button>
+  </section>
+  <div class="report-grid">
+    <section class="panel"><div class="panel-head"><div><div class="eyebrow">ACTION REQUIRED</div><h2>Current alerts</h2></div><span class="panel-counter">${alerts.length}</span></div>
+      ${alerts.length ? `<div class="report-alert-list">${alerts.map((alert) => `<article class="report-alert"><span class="report-alert-mark ${alert.severity}">${alert.severity === 'action' ? 'DECISION' : 'STUCK'}</span><div><h3>${escapeHTML(alert.title)}</h3><p>${escapeHTML(alert.task_title)} · ${escapeHTML(alert.detail)}</p><small>Since ${formatDateTime(alert.since)}</small></div><a href="#approvals">Open task →</a></article>`).join('')}</div>` : '<p class="report-empty">Nothing is currently stuck or awaiting your decision.</p>'}
+    </section>
+    <section class="panel"><div class="panel-head"><div><div class="eyebrow">DAILY SNAPSHOT</div><h2>${latest ? escapeHTML(latest.date) : 'Next report at 6:00 PM'}</h2></div><span class="panel-counter">Asia/Kolkata</span></div>
+      ${latest ? `<div class="report-stats"><div><span>Tasks</span><strong>${formatNumber(latest.taskCount)}</strong></div><div><span>Model calls</span><strong>${formatNumber(latest.modelCalls)}</strong></div><div><span>Tokens</span><strong>${formatNumber(Number(latest.inputTokens) + Number(latest.outputTokens))}</strong></div><div><span>Needs attention</span><strong>${formatNumber(latest.attention?.length)}</strong></div></div>
+      <h3>Work by agent</h3>${Object.entries(latest.agents || {}).length ? `<div class="report-agents">${Object.entries(latest.agents).map(([name, agent]) => `<div><strong>${escapeHTML(name)}</strong><span>${formatNumber(agent.calls)} calls · ${formatNumber(agent.messages)} messages · ${formatNumber(Number(agent.inputTokens) + Number(agent.outputTokens))} tokens</span></div>`).join('')}</div>` : '<p class="report-empty">No real agent activity was recorded for this report.</p>'}
+      <p class="report-note">These are recorded actions, not a model-written CTO summary. Demo steps and account-wide subscription usage are excluded.</p>` : '<p class="report-empty">The first report appears after 6:00 PM IST. Until then, live alerts above show immediate issues.</p>'}
+    </section>
+  </div>
+  ${reports.length > 1 ? `<details class="report-history"><summary>Earlier daily reports (${reports.length - 1})</summary>${reports.slice(1).map((report) => `<div>${escapeHTML(report.date)} · ${formatNumber(report.modelCalls)} calls · ${formatNumber(Number(report.inputTokens) + Number(report.outputTokens))} tokens · ${formatNumber(report.attention?.length)} need attention</div>`).join('')}</details>` : ''}`;
+}
+
 function signature() {
-  return JSON.stringify([data.tasks, data.events, data.messages, data.reviewPackets, data.chatJobs, data.database, data.mode, usageData, contextData, contextNote, usageError, pairingNote, connection, error, selectedTask, chatTask, chatAgent, chatLane, dmAgent, chatTargetAgent, chatTargetTask, currentView(), busy]);
+  return JSON.stringify([data.tasks, data.events, data.messages, data.reviewPackets, data.chatJobs, data.database, data.mode, usageData, reportData, contextData, contextNote, usageError, pairingNote, connection, error, selectedTask, chatTask, chatAgent, chatLane, dmAgent, chatTargetAgent, chatTargetTask, currentView(), busy]);
 }
 
 function render() {
@@ -365,6 +403,7 @@ function render() {
           <a class="nav-item ${location.hash === '#activity' ? 'active' : ''}" href="#activity"><span class="nav-glyph">◷</span> Activity</a>
           <a class="nav-item ${view === 'chats' ? 'active' : ''}" href="#chats"><span class="nav-glyph">◉</span> Agent chats <span class="nav-count">${data.messages.length}</span></a>
           <a class="nav-item ${view === 'approvals' ? 'active' : ''}" href="#approvals"><span class="nav-glyph">✓</span> Approvals <span class="nav-count">${data.tasks.filter((task) => task.status === 'review_accepted').length}</span></a>
+          <a class="nav-item ${view === 'reports' ? 'active' : ''}" href="#reports"><span class="nav-glyph">◬</span> Alerts &amp; reports <span class="nav-count">${reportData?.alerts?.length || 0}</span></a>
           <a class="nav-item ${view === 'usage' ? 'active' : ''}" href="#usage"><span class="nav-glyph">◈</span> Connect &amp; usage</a>
         </nav>
         <div class="side-bottom">
@@ -376,12 +415,12 @@ function render() {
       </aside>
       <main id="${view}" class="main">
         <header class="topbar">
-          <div class="crumb">Workspace <span>/</span> ${view === 'chats' ? 'Agent chats' : view === 'approvals' ? 'Approvals' : view === 'usage' ? 'Connect &amp; usage' : 'Operations'}</div>
+          <div class="crumb">Workspace <span>/</span> ${view === 'chats' ? 'Agent chats' : view === 'approvals' ? 'Approvals' : view === 'reports' ? 'Alerts &amp; reports' : view === 'usage' ? 'Connect &amp; usage' : 'Operations'}</div>
           <div class="top-actions"><span class="status ${connection === 'connected' ? 'online' : 'offline'}"><i></i>${connection === 'connected' ? 'Connected' : 'Connecting'}</span><span class="avatar" title="Owner view">YOU</span></div>
         </header>
         <div class="content">
           ${error ? `<div class="alert" role="alert">${escapeHTML(error)} <span>Backend: ${escapeHTML(API)}</span></div>` : ''}
-          ${view === 'chats' ? renderChats() : view === 'approvals' ? renderApprovals() : view === 'usage' ? renderUsage() : renderOverview()}
+          ${view === 'chats' ? renderChats() : view === 'approvals' ? renderApprovals() : view === 'reports' ? renderReports() : view === 'usage' ? renderUsage() : renderOverview()}
           <footer>Northstar Lab · Research workflow pilot · ${data.database === 'postgres' ? 'PostgreSQL history' : 'Temporary history'} · <a href="${REPO}" target="_blank" rel="noopener noreferrer">Source on GitHub ↗</a></footer>
         </div>
       </main>
@@ -413,6 +452,10 @@ function render() {
     try { await navigator.clipboard.writeText(pairingKey); pairingNote = 'Copied. Paste only into your local Terminal command.'; }
     catch { pairingNote = 'Clipboard access failed. Retry in a secure browser context.'; }
     render();
+  });
+  document.querySelector('#copy-workspace-id')?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(reportData.workspace_id); window.alert('Workspace ID copied. Put it only in the Render environment setting.'); }
+    catch { window.alert('Clipboard access failed. Please try again.'); }
   });
   document.querySelectorAll('[data-chat-task]').forEach((button) => button.addEventListener('click', () => { chatTask = button.dataset.chatTask; if (chatTask !== 'all') chatTargetTask = chatTask; resetChatScroll = true; render(); }));
   document.querySelectorAll('[data-chat-lane]').forEach((button) => button.addEventListener('click', () => { chatLane = button.dataset.chatLane; resetChatScroll = true; render(); }));
@@ -457,6 +500,12 @@ async function refreshUsage() {
   }
   const typing = ['title', 'brief', 'owner-question', 'project-goal', 'project-notes'].includes(document.activeElement?.id) || document.activeElement?.id?.startsWith('decision-note-');
   if (!busy && !typing && signature() !== lastRenderedSignature) render();
+}
+
+async function refreshReports() {
+  try { reportData = await request('/api/reports'); }
+  catch { reportData = null; }
+  if (!busy && signature() !== lastRenderedSignature) render();
 }
 
 async function create(event) {
@@ -579,6 +628,7 @@ async function ownerDecision(event) {
 window.addEventListener('hashchange', () => {
   render();
   refreshUsage();
+  refreshReports();
   const anchor = location.hash.slice(1);
   requestAnimationFrame(() => {
     if (anchor === 'tasks' || anchor === 'activity') document.getElementById(anchor)?.scrollIntoView({ behavior: 'smooth' });
@@ -589,9 +639,11 @@ window.addEventListener('hashchange', () => {
 render();
 refresh();
 refreshUsage();
+refreshReports();
 refreshContext();
 setInterval(() => { if (!document.hidden) refresh(); }, 1500);
 setInterval(() => { if (!document.hidden) refreshUsage(); }, 30000);
+setInterval(() => { if (!document.hidden) refreshReports(); }, 30000);
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) { refresh(); refreshUsage(); }
+  if (!document.hidden) { refresh(); refreshUsage(); refreshReports(); }
 });

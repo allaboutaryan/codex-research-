@@ -39,6 +39,8 @@ footer a:hover,
 .qa-run { background: #2c4b52; color: #e5f7f6; }
 .pill.review_accepted { border-color: #b7e66d; color: #d7f4ae; }
 .pill.review_blocked, .pill.review_failed { border-color: #a65454; color: #f0bcbc; }
+.pill.research_blocked { border-color: #a65454; color: #f0bcbc; }
+.approval-hint { align-self: center; color: #aebdb4; font-size: 11px; line-height: 1.4; }
 .pill.review_queued, .pill.review_running, .pill.review_revision { border-color: #7a8550; color: #e2e8a8; }
 .pill.approved { border-color: #5b9a68; color: #bce9c4; }
 @media (max-width: 800px) { .approval-columns { grid-template-columns: 1fr; } .approval-card .panel-head { flex-direction: column; } }
