@@ -46,7 +46,13 @@ The [Agent chats view](https://northstar-lab-woad.vercel.app/#chats) has task th
 
 ## Research artifacts and product decisions
 
-The first bounded desk review is [2024–2026 OSS newcomer onboarding: preliminary evidence and a testable MVP hypothesis](research/2024-2026-oss-onboarding-preliminary.md). It is **not** an agent-team result or a QA-approved build decision; the live two-year task remains pending while the local Claude worker is stopped after a limit error.
+The first bounded desk review is [2024–2026 OSS newcomer onboarding: preliminary evidence and a testable MVP hypothesis](research/2024-2026-oss-onboarding-preliminary.md). It is **not** an agent-team result or a QA-approved build decision. The live two-year task and its QA status are visible in the dashboard; unreviewed model drafts must not be treated as product evidence.
+
+### Contributor Readiness product pilot
+
+The owner approved a **small validation pilot**, not a claim that the market gap or retention effect is proven. [Open the public, read-only pilot](https://northstar-lab-woad.vercel.app/contributor/). Its source is in [`frontend/public/contributor/`](frontend/public/contributor/). It reads public GitHub repository metadata, up to 12 open `good first issue` items, and GitHub's community-profile links for README/contribution guidance. It shows assignment and help-path signals, lets a facilitator save setup/test steps **locally on that browser** after personally checking them, copies a short blocker question for manual review/posting, and records a self-reported timed usability session locally. It does not execute commands, use AI, post to GitHub, accept credentials, access private repositories, or send local notes to our server. A local check is explicitly **not** authenticated maintainer endorsement. Browser storage may be cleared; it is not a shared database.
+
+Pilot hypothesis: a checked setup/test path and a clear human-help handoff make first contribution less confusing than the repository's normal flow. Test with real newcomers and consenting maintainers, measuring whether participants reach a passing test and know whom to ask. Compare against the existing GitHub path before investing in a shared backend or GitHub App. Public GitHub REST access is [rate limited](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api), so the page loads on demand and reports rate-limit errors rather than requiring a key.
 
 Accepted research packets should include a citation index, concise findings, limitations, conflicting evidence, and a proposed test of the identified gap. The GitHub repository will hold versioned, shareable findings and decision records. For papers or images that cannot legally be redistributed, store metadata and links rather than copies. A product idea moves forward only when evidence, user need, feasibility, and QA findings support a small validation experiment.
 

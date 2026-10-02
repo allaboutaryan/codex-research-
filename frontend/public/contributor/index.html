@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f6f5f0" />
+    <meta name="description" content="A read-only pilot for making an open-source contribution less confusing." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="./style.css" />
+    <title>Contributor Readiness · Northstar Lab</title>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/"><span class="brand-mark">✳</span><span>Northstar <strong>Lab</strong></span></a>
+      <nav aria-label="Site links"><a href="/">Research workspace</a><a href="https://github.com/allaboutaryan/codex-research-" target="_blank" rel="noopener noreferrer">Source ↗</a></nav>
+    </header>
+    <main>
+      <section class="hero">
+        <div class="hero-copy"><span class="eyebrow">PRODUCT PILOT · PUBLIC REPOSITORIES ONLY</span><h1>A clearer path to your <em>first contribution.</em></h1><p>Find a real starter issue, check the project’s own instructions, and know what to ask when you get stuck. No account, AI call, or automatic post.</p></div>
+        <div class="hero-note"><span class="note-symbol">↗</span><strong>What this tests</strong><p>Does a checked setup path and a better help handoff make the first contribution less confusing?</p><small>Research hypothesis, not a proven outcome.</small></div>
+      </section>
+      <section class="search-panel" aria-label="Repository search">
+        <div><span class="eyebrow">01 / START WITH A REPOSITORY</span><h2>Explore a public project</h2><p>Paste <code>owner/repository</code> or a GitHub issue URL. We only read public GitHub data.</p></div>
+        <form id="repo-form"><label for="repo-input">GitHub repository or issue</label><div class="input-row"><input id="repo-input" name="repository" required autocomplete="off" spellcheck="false" value="microsoft/vscode" placeholder="owner/repository" /><button type="submit">Load project <span aria-hidden="true">→</span></button></div></form>
+      </section>
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+      <div id="workspace" class="workspace" aria-live="polite"><div class="loading-card">Loading a public repository…</div></div>
+      <section class="pilot-note"><div><span class="eyebrow">WHAT THIS IS / ISN’T</span><h2>A testable workflow, not a promise</h2></div><p>GitHub already helps people find starter issues. This pilot adds an explicit setup check and a clear route for getting help. A locally checked card is self-attested on this device, not endorsed by a repository maintainer. Issue availability and review time can change. Verify everything in the project itself before contributing.</p></section>
+    </main>
+    <footer><span>Northstar Lab · Contributor Readiness pilot</span><span>Public GitHub data · Local-only notes · No automatic posting</span></footer>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
