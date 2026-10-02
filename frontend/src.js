@@ -410,7 +410,7 @@ function render() {
           <a class="nav-item ${view === 'overview' && !['#tasks', '#activity'].includes(location.hash) ? 'active' : ''}" href="#overview"><span class="nav-glyph">◫</span> Overview</a>
           <a class="nav-item ${location.hash === '#tasks' ? 'active' : ''}" href="#tasks"><span class="nav-glyph">▤</span> Task queue <span class="nav-count">${data.tasks.length}</span></a>
           <a class="nav-item ${location.hash === '#activity' ? 'active' : ''}" href="#activity"><span class="nav-glyph">◷</span> Activity</a>
-          <a class="nav-item" href="/contributor/"><span class="nav-glyph">↗</span> Product pilot</a>
+          <a class="nav-item" href="/contributor/index.html"><span class="nav-glyph">↗</span> Product pilot</a>
           <a class="nav-item ${view === 'chats' ? 'active' : ''}" href="#chats"><span class="nav-glyph">◉</span> Agent chats <span class="nav-count">${data.messages.length}</span></a>
           <a class="nav-item ${view === 'approvals' ? 'active' : ''}" href="#approvals"><span class="nav-glyph">✓</span> Approvals <span class="nav-count">${data.tasks.filter((task) => task.status === 'review_accepted').length}</span></a>
           <a class="nav-item ${view === 'reports' ? 'active' : ''}" href="#reports"><span class="nav-glyph">◬</span> Alerts &amp; reports <span class="nav-count">${reportData?.alerts?.length || 0}</span></a>
